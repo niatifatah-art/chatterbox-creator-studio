@@ -1,0 +1,39 @@
+name: optional-helper-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev/v1.0-creator-suite
+    paths:
+      - "studio/**"
+      - "requirements.txt"
+      - "requirements-optional.txt"
+      - "scripts/smoke_optional.py"
+      - ".github/workflows/optional-smoke.yml"
+
+jobs:
+  optional-helper-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      HF_HOME: /tmp/huggingface
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install application and optional helpers
+        run: python -m pip install --no-cache-dir -r requirements.txt -r requirements-optional.txt
+      - name: Download official reference voice
+        run: curl --fail --location --retry 3 --output /tmp/reference.wav https://storage.googleapis.com/chatterbox-demo-samples/prompts/female_random_podcast.wav
+      - name: Run Nano plus Faster-Whisper and preprocessing smoke
+        run: PYTHONPATH=. python scripts/smoke_optional.py --voice /tmp/reference.wav --output-dir optional-smoke-output
+      - name: Upload optional smoke output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optional-helper-smoke
+          path: optional-smoke-output/
+          if-no-files-found: ignore
+          retention-days: 3
