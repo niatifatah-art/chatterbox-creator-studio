@@ -6,12 +6,14 @@ import struct
 import wave
 from pathlib import Path
 
+import pytest
+
 from studio.batch import BatchItem, parse_json, parse_srt_or_vtt, parse_txt
 from studio.batch_runner import run_batch
 from studio.engine import GenerationResult
 from studio.preprocess import PreprocessOptions, process_text
 from studio.projects import ProjectStore
-from studio.quality import analyze_audio, text_similarity
+from studio.quality import QualityReport, text_similarity
 from studio.reliability import GenerationPolicy, generate_reliably
 from studio.voices import VoiceLibrary
 
@@ -94,14 +96,6 @@ def test_text_similarity_ignores_pause_tokens():
     assert text_similarity("Hello [pause=0.5] world!", "hello world") > 0.95
 
 
-def test_quality_check_accepts_basic_voiced_audio(tmp_path):
-    audio = tmp_path / "clean.wav"
-    _write_wav(audio, 0.5)
-    report = analyze_audio(audio)
-    assert report.duration_seconds > 0.45
-    assert report.score > 0.8
-
-
 class _FakeEngine:
     def __init__(self, directory: Path):
         self.directory = directory
@@ -123,7 +117,26 @@ class _FakeEngine:
         )
 
 
-def test_reliability_and_batch_work_without_optional_dependencies(tmp_path):
+def test_reliability_and_batch_work_without_optional_dependencies(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    # Core CI deliberately does not install PyTorch. Patch the audio metric itself
+    # so this test exercises Best-of orchestration while real-model CI tests the
+    # actual torchaudio quality analyzer.
+    import studio.reliability as reliability
+
+    monkeypatch.setattr(
+        reliability,
+        "analyze_audio",
+        lambda path: QualityReport(
+            passed=True,
+            score=0.8 + (0.01 if Path(path).stem == "2" else 0.0),
+            duration_seconds=0.5,
+            silence_ratio=0.0,
+            clipping_ratio=0.0,
+            tail_silence_seconds=0.0,
+            warnings=(),
+        ),
+    )
+
     engine = _FakeEngine(tmp_path)
     reliable = generate_reliably(
         engine,
@@ -136,7 +149,7 @@ def test_reliability_and_batch_work_without_optional_dependencies(tmp_path):
     )
     assert len(reliable.candidates) == 2
     assert all(candidate.quality is not None for candidate in reliable.candidates)
-    assert reliable.selected.result.audio_path.exists()
+    assert reliable.selected.result.audio_path.name == "2.wav"
     payload = json.loads(reliable.selected.result.metadata_path.read_text(encoding="utf-8"))
     assert payload["studio_reliability"]["quality_used_for_best_of"] is True
 
