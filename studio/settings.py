@@ -14,7 +14,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "repetition_penalty": 1.20,
     "min_p": 0.05,
     "top_p": 1.00,
-    "speech_speed": 0.94,
+    "speech_speed": 1.00,
 }
 
 
