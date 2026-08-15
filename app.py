@@ -51,13 +51,7 @@ LANGUAGES = {
 }
 LANGUAGE_NAMES_BY_CODE = {code: name for name, code in LANGUAGES.items()}
 
-SAMPLE_SCRIPT = """Aaaand yes, it actually worked.
-[pause=0.35]
-
-Buuut, there is one small problem.
-[pause=0.80]
-
-Sooo, let's try it one more time."""
+SAMPLE_SCRIPT = """I wanted a cleaner way to make voiceovers, without repeating the same setup every time. [pause=0.45] So I built a small local studio where I can save a voice, control the delivery, add exact pauses, and generate the final WAV without leaving the browser. [pause=0.65] It is still simple, but that is exactly what I wanted."""
 
 
 def append_token(text: str, token: str) -> str:
@@ -193,16 +187,13 @@ with gr.Blocks(title="Chatterbox Creator Studio", analytics_enabled=False) as de
                 placeholder="Write your script here. Use [pause=0.35] for exact silence.",
                 elem_id="script-box",
             )
-            gr.Markdown("**Quick inserts** · pauses are digital silence, not prompt tricks.")
+            gr.Markdown("**Quick inserts** · exact digital silence, not punctuation tricks.")
             with gr.Row():
                 for label, token in [
                     ("+0.25s", "[pause=0.25]"),
                     ("+0.5s", "[pause=0.5]"),
                     ("+1s", "[pause=1]"),
                     ("+2s", "[pause=2]"),
-                    ("Aaaand", "Aaaand"),
-                    ("Buuut", "Buuut"),
-                    ("Sooo", "Sooo"),
                 ]:
                     button = gr.Button(label, size="sm", variant="secondary")
                     button.click(make_insert_handler(token), inputs=script, outputs=script, queue=False)
@@ -252,7 +243,7 @@ with gr.Blocks(title="Chatterbox Creator Studio", analytics_enabled=False) as de
                 min_p = gr.Slider(0.0, 0.5, value=float(settings["min_p"]), step=0.01, label="Min P")
                 top_p = gr.Slider(0.1, 1.0, value=float(settings["top_p"]), step=0.01, label="Top P")
                 speech_speed = gr.Slider(0.75, 1.25, value=float(settings["speech_speed"]), step=0.01, label="Post speech speed")
-                gr.Markdown("`0.94x` is slightly slower. Digital `[pause=…]` durations stay exact regardless of this setting.")
+                gr.Markdown("Keep **1.00x** for the cleanest output. Non-1.00 values use post-processing and may introduce metallic or phasey artifacts. Exact `[pause=…]` durations are preserved either way.")
 
             gr.Markdown(
                 """
