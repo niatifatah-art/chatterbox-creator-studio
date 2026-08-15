@@ -58,29 +58,40 @@ def run_batch(
             )
             selected = reliable.selected.result
             safe_id = "".join(char if char.isalnum() or char in "-_" else "-" for char in item.id).strip("-") or str(index)
-            destination = output_dir / f"{index:04d}_{safe_id}.wav"
-            shutil.copy2(selected.audio_path, destination)
-            metadata_destination = destination.with_suffix(".json")
+            raw_destination = output_dir / f"{index:04d}_{safe_id}.wav"
+            shutil.copy2(selected.audio_path, raw_destination)
+            destination = raw_destination
+            metadata_destination = raw_destination.with_suffix(".json")
             shutil.copy2(selected.metadata_path, metadata_destination)
+
+            timing_warning: str | None = None
             if fit_to_timing and item.target_duration_seconds and item.target_duration_seconds > 0:
                 fitted = output_dir / f"{index:04d}_{safe_id}_fit.wav"
-                process_audio(
-                    destination,
-                    fitted,
-                    AudioProcessOptions(
-                        target_duration_seconds=item.target_duration_seconds,
-                        max_duration_stretch=float(max_duration_stretch),
-                    ),
-                )
-                destination = fitted
+                try:
+                    process_audio(
+                        raw_destination,
+                        fitted,
+                        AudioProcessOptions(
+                            target_duration_seconds=item.target_duration_seconds,
+                            max_duration_stretch=float(max_duration_stretch),
+                        ),
+                    )
+                    destination = fitted
+                except ValueError as exc:
+                    # Duration fitting is a convenience, not a reason to discard a valid
+                    # generation. Keep the raw take and record why fitting was skipped.
+                    timing_warning = str(exc)
+
             row.update(
                 {
                     "status": "ok",
                     "output": str(destination),
+                    "raw_output": str(raw_destination),
                     "metadata": str(metadata_destination),
                     "seed": selected.seed,
                     "score": reliable.selected.score,
                     "candidate_count": len(reliable.candidates),
+                    "timing_warning": timing_warning,
                 }
             )
             generated += 1
