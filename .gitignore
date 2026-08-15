@@ -4,10 +4,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Local creator data — never commit voices or generated audio
+# Local creator data — never commit voices, projects, or generated audio
 data/voices/*
 !data/voices/.gitkeep
+data/projects/
 data/settings.json
+data/model_state.json
 outputs/*
 !outputs/.gitkeep
 
