@@ -11,19 +11,19 @@ from studio.batch_runner import run_batch
 from studio.engine import GenerationResult
 from studio.preprocess import PreprocessOptions, process_text
 from studio.projects import ProjectStore
-from studio.quality import text_similarity
+from studio.quality import analyze_audio, text_similarity
 from studio.reliability import GenerationPolicy, generate_reliably
 from studio.voices import VoiceLibrary
 
 
-def _write_wav(path: Path, seconds: float = 1.0, sample_rate: int = 8000) -> None:
+def _write_wav(path: Path, seconds: float = 1.0, sample_rate: int = 8000, amplitude: int = 6000) -> None:
     frames = int(seconds * sample_rate)
     with wave.open(str(path), "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(sample_rate)
         for index in range(frames):
-            value = int(6000 * math.sin(2 * math.pi * 220 * index / sample_rate))
+            value = int(amplitude * math.sin(2 * math.pi * 220 * index / sample_rate))
             handle.writeframesraw(struct.pack("<h", value))
 
 
@@ -64,7 +64,7 @@ def test_project_store_round_trip_and_takes(tmp_path):
     assert saved["script"] == "hello"
     assert store.list()[0].id == project["id"]
     audio = tmp_path / "take.wav"
-    audio.write_bytes(b"RIFFfake")
+    _write_wav(audio, 0.25)
     metadata = tmp_path / "take.json"
     metadata.write_text('{"seed": 1}', encoding="utf-8")
     copied = store.add_take(project["id"], audio, metadata)
@@ -94,6 +94,14 @@ def test_text_similarity_ignores_pause_tokens():
     assert text_similarity("Hello [pause=0.5] world!", "hello world") > 0.95
 
 
+def test_quality_check_accepts_basic_voiced_audio(tmp_path):
+    audio = tmp_path / "clean.wav"
+    _write_wav(audio, 0.5)
+    report = analyze_audio(audio)
+    assert report.duration_seconds > 0.45
+    assert report.score > 0.8
+
+
 class _FakeEngine:
     def __init__(self, directory: Path):
         self.directory = directory
@@ -103,7 +111,7 @@ class _FakeEngine:
         self.counter += 1
         audio = self.directory / f"{self.counter}.wav"
         metadata = self.directory / f"{self.counter}.json"
-        audio.write_bytes(b"fake-audio")
+        _write_wav(audio, 0.5, amplitude=5000 + self.counter * 100)
         metadata.write_text(json.dumps({"original_script": script}), encoding="utf-8")
         return GenerationResult(
             audio_path=audio,
@@ -115,7 +123,7 @@ class _FakeEngine:
         )
 
 
-def test_reliability_and_batch_work_without_helpers(tmp_path):
+def test_reliability_and_batch_work_without_optional_dependencies(tmp_path):
     engine = _FakeEngine(tmp_path)
     reliable = generate_reliably(
         engine,
@@ -127,9 +135,10 @@ def test_reliability_and_batch_work_without_helpers(tmp_path):
         seed=10,
     )
     assert len(reliable.candidates) == 2
+    assert all(candidate.quality is not None for candidate in reliable.candidates)
     assert reliable.selected.result.audio_path.exists()
     payload = json.loads(reliable.selected.result.metadata_path.read_text(encoding="utf-8"))
-    assert "studio_reliability" in payload
+    assert payload["studio_reliability"]["quality_used_for_best_of"] is True
 
     summary = run_batch(
         engine,
