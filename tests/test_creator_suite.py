@@ -53,9 +53,16 @@ def test_batch_parses_srt_vtt_json_and_txt():
     items = parse_srt_or_vtt(srt)
     assert len(items) == 2
     assert items[0].target_duration_seconds == 2.5
-    vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:01.250\nHi"
-    assert parse_srt_or_vtt(vtt)[0].target_duration_seconds == 1.25
-    assert parse_json('[{"id":"x","text":"Hello"}]')[0].id == "x"
+
+    # WebVTT permits timestamps without an hours field and may include cue settings.
+    vtt = "WEBVTT\n\nintro\n00:00.000 --> 00:01.250 position:10%\nHi"
+    vtt_item = parse_srt_or_vtt(vtt)[0]
+    assert vtt_item.id == "intro"
+    assert vtt_item.target_duration_seconds == 1.25
+
+    json_item = parse_json('[{"id":"x","text":"Hello","start":"00:01.500","end":"00:03.000"}]')[0]
+    assert json_item.id == "x"
+    assert json_item.target_duration_seconds == 1.5
     assert len(parse_txt("one\n\ntwo")) == 2
 
 
