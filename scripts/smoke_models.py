@@ -29,10 +29,10 @@ def main() -> None:
 
     # Use the same managed-model path as the product UI. This is intentionally
     # part of the real smoke: it validates official model download, exact local
-    # snapshot selection, and upstream from_local loading instead of only testing
-    # the legacy from_pretrained fallback.
+    # snapshot selection, upstream from_local loading, and the download-progress
+    # adapter used by the UI instead of only testing the legacy fallback path.
     manager = LocalModelManager(output_dir / "model_state.json")
-    managed = manager.download(args.model)
+    managed = manager.download(args.model, progress=lambda current, total, desc: None)
     if not managed.installed or not managed.snapshot_path or not managed.revision:
         raise RuntimeError("Managed model download did not produce a pinned local snapshot")
 
