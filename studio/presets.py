@@ -16,9 +16,9 @@ class GenerationPreset:
 
 PRESETS: dict[str, GenerationPreset] = {
     "Natural": GenerationPreset(0.50, 0.50, 0.80, 1.20, 0.05, 1.00, 1.00),
-    "Creator": GenerationPreset(0.65, 0.30, 0.80, 1.20, 0.05, 1.00, 0.94),
-    "Stable": GenerationPreset(0.45, 0.45, 0.65, 1.25, 0.05, 0.95, 0.98),
-    "Expressive": GenerationPreset(0.75, 0.30, 0.85, 1.20, 0.05, 1.00, 0.96),
+    "Creator": GenerationPreset(0.65, 0.30, 0.80, 1.20, 0.05, 1.00, 1.00),
+    "Stable": GenerationPreset(0.45, 0.45, 0.65, 1.25, 0.05, 0.95, 1.00),
+    "Expressive": GenerationPreset(0.75, 0.30, 0.85, 1.20, 0.05, 1.00, 1.00),
 }
 
 
