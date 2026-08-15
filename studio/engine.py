@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import secrets
 import threading
 from dataclasses import asdict, dataclass
@@ -54,11 +55,24 @@ def _resolve_seed(seed: int | None) -> int:
     return int(seed)
 
 
-def _seed_torch(seed: int) -> None:
+def _seed_everything(seed: int) -> None:
+    """Seed the RNGs used by Chatterbox and its common dependencies."""
+    random.seed(seed)
+
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except Exception:
+        # NumPy is present in normal Chatterbox installs, but keeping this
+        # optional makes the lightweight core easier to import/test.
+        pass
+
     import torch
 
     torch.manual_seed(seed)
     if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
 
@@ -138,6 +152,8 @@ class ChatterboxEngine:
         script = script or ""
         if not script.strip():
             raise ValueError("Add some text to synthesize.")
+        if model_id not in MODEL_SPECS:
+            raise ValueError(f"Unknown model '{model_id}'.")
         if not 0.0 <= float(chunk_gap_seconds) <= 3.0:
             raise ValueError("Chunk gap must be between 0 and 3 seconds.")
         if not 0.5 <= float(speech_speed) <= 2.0:
@@ -182,7 +198,7 @@ class ChatterboxEngine:
 
         with self._lock:
             adapter = self._adapter_for(model_id)
-            _seed_torch(actual_seed)
+            _seed_everything(actual_seed)
             clips = []
             generated_chunks: list[str] = []
             sample_rate: int | None = None
