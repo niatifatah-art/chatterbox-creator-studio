@@ -65,7 +65,7 @@ jobs:
       - name: Download official reference voice
         run: curl --fail --location --retry 3 --output /tmp/reference.wav https://storage.googleapis.com/chatterbox-demo-samples/prompts/female_random_podcast.wav
       - name: Run real model smoke test
-        run: python scripts/smoke_models.py --model "${{ matrix.model }}" --voice /tmp/reference.wav --output-dir smoke-output
+        run: PYTHONPATH=. python scripts/smoke_models.py --model "${{ matrix.model }}" --voice /tmp/reference.wav --output-dir smoke-output
       - name: Upload smoke output
         if: always()
         uses: actions/upload-artifact@v4
