@@ -10,6 +10,7 @@ from studio.model_manager import LocalModelManager
 from studio.product import (
     ProductSystemProfile,
     compatible_models,
+    detect_script_language,
     model_id_from_ui_name,
     quality_policy,
     resolve_language,
@@ -34,6 +35,33 @@ def test_auto_model_prefers_multilingual_for_arabic():
     assert resolve_language("Auto", script) == "Arabic"
     assert resolve_model_id("Auto", "Auto", script, profile) == "multilingual-v3"
     assert compatible_models("Auto", script) == ("multilingual-v3",)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Привет, это тест голоса.", "Russian"),
+        ("你好，这是一个语音测试。", "Chinese"),
+        ("これは音声のテストです。", "Japanese"),
+        ("שלום, זה מבחן קולי.", "Hebrew"),
+        ("नमस्ते, यह आवाज़ का परीक्षण है।", "Hindi"),
+        ("Γεια σας, αυτή είναι μια δοκιμή.", "Greek"),
+        ("안녕하세요. 음성 테스트입니다.", "Korean"),
+    ],
+)
+def test_auto_language_recognizes_distinctive_scripts(text: str, expected: str):
+    assert detect_script_language(text) == expected
+    assert resolve_language("Auto", text) == expected
+    profile = ProductSystemProfile(compute="cpu", ram_gb=16, vram_gb=None)
+    assert resolve_model_id("Auto", "Auto", text, profile) == "multilingual-v3"
+
+
+def test_auto_language_is_conservative_for_latin_script():
+    # Short Latin-script creator text is ambiguous across many supported languages.
+    # Auto stays predictable instead of pretending to know; the language selector
+    # remains available when the user wants Spanish/French/etc.
+    assert detect_script_language("Hola, esto es una prueba de voz.") is None
+    assert resolve_language("Auto", "Hola, esto es una prueba de voz.") == "English"
 
 
 def test_auto_model_prefers_light_on_cpu_for_english():
