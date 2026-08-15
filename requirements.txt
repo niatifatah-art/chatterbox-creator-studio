@@ -1,0 +1,2 @@
+# Pin the upstream source revision so V3 support is reproducible.
+chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2
