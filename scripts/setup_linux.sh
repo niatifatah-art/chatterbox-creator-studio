@@ -7,10 +7,12 @@ if ! command -v python3.11 >/dev/null 2>&1; then
   exit 1
 fi
 
-python3.11 -m venv .venv
+if [ ! -x .venv/bin/python ]; then
+  python3.11 -m venv .venv
+fi
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/python -m pip install -r requirements.txt
 
 echo
 echo "Setup complete. Start with: bash scripts/start_linux.sh"
-echo "The first generation downloads the official Chatterbox Multilingual V3 model if it is not cached."
+echo "Models are managed from inside the app and download only when you choose to install or use them."

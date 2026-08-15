@@ -181,8 +181,9 @@ class ModelAdapter(Protocol):
 class _BaseAdapter:
     spec: ModelSpec
 
-    def __init__(self, device: str):
+    def __init__(self, device: str, model_dir: str | Path | None = None):
         self.device = device
+        self.model_dir = Path(model_dir) if model_dir else None
         self._model = None
         self._voice_key: tuple[str, float] | tuple[str] | None = None
 
@@ -217,10 +218,17 @@ class MultilingualV3Adapter(_BaseAdapter):
         if self._model is None:
             from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
-            self._model = ChatterboxMultilingualTTS.from_pretrained(
-                device=self.device,
-                t3_model="v3",
-            )
+            if self.model_dir is not None:
+                self._model = ChatterboxMultilingualTTS.from_local(
+                    self.model_dir,
+                    self.device,
+                    t3_model="v3",
+                )
+            else:
+                self._model = ChatterboxMultilingualTTS.from_pretrained(
+                    device=self.device,
+                    t3_model="v3",
+                )
         return self._model
 
     def _prepare_voice(self, voice_path: Path, exaggeration: float) -> None:
@@ -254,10 +262,17 @@ class TurboAdapter(_BaseAdapter):
         if self._model is None:
             from chatterbox.tts_turbo import ChatterboxTurboTTS
 
-            self._model = ChatterboxTurboTTS.from_pretrained(
-                device=self.device,
-                nano=self.nano,
-            )
+            if self.model_dir is not None:
+                self._model = ChatterboxTurboTTS.from_local(
+                    self.model_dir,
+                    self.device,
+                    nano=self.nano,
+                )
+            else:
+                self._model = ChatterboxTurboTTS.from_pretrained(
+                    device=self.device,
+                    nano=self.nano,
+                )
         return self._model
 
     def _prepare_voice(self, voice_path: Path) -> None:
@@ -292,9 +307,9 @@ ADAPTER_TYPES = {
 }
 
 
-def create_adapter(model_id: str, device: str) -> ModelAdapter:
+def create_adapter(model_id: str, device: str, model_dir: str | Path | None = None) -> ModelAdapter:
     try:
         adapter_type = ADAPTER_TYPES[model_id]
     except KeyError as exc:
         raise ValueError(f"Unknown Chatterbox model: {model_id}") from exc
-    return adapter_type(device)
+    return adapter_type(device, model_dir=model_dir)

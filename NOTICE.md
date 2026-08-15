@@ -1,7 +1,15 @@
 # Notice
 
-Chatterbox Creator Studio is an independent community interface. It is **not** an official Resemble AI product and is not endorsed by Resemble AI.
+Creator Studio is an independent community application. It is **not** an official Resemble AI product and is not endorsed by Resemble AI.
 
-The speech model used by this project is **Chatterbox Multilingual V3** by [Resemble AI](https://github.com/resemble-ai/chatterbox). Chatterbox is distributed under its own MIT license and includes Resemble AI's PerTh neural watermarking in generated audio.
+The speech engines currently supported by this repository are based on Resemble AI's open-source Chatterbox family:
 
-This repository does not redistribute the Chatterbox model weights. On first use, the upstream Chatterbox library downloads the required official model files from the `ResembleAI/chatterbox` model repository on Hugging Face and stores them in the user's Hugging Face cache.
+- Chatterbox Multilingual V3
+- Chatterbox Turbo
+- Chatterbox Nano
+
+The upstream Chatterbox implementation and model repositories are distributed under their applicable open-source licenses. The application preserves the upstream PerTh watermarking behavior in generated audio.
+
+This repository does not redistribute the model weights. Model files are downloaded from the official `ResembleAI` Hugging Face repositories when the user installs or uses a missing model. Creator Studio records the exact local snapshot it selected so a later upstream revision does not silently replace a working model; updating is an explicit user action.
+
+See `requirements.txt` for the pinned upstream source revision and `LICENSE` for this repository's license.

@@ -5,12 +5,15 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .audio import AudioProcessOptions, process_audio
 from .batch import BatchItem
 from .engine import ChatterboxEngine
 from .reliability import GenerationPolicy, generate_reliably
+
+
+BatchProgressCallback = Callable[[str, int | None, int | None], None]
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ def run_batch(
     policy: GenerationPolicy | None = None,
     fit_to_timing: bool = False,
     max_duration_stretch: float = 1.18,
+    progress_callback: BatchProgressCallback | None = None,
 ) -> BatchGenerationSummary:
     if not items:
         raise ValueError("Batch is empty.")
@@ -39,8 +43,11 @@ def run_batch(
     manifest: list[dict[str, Any]] = []
     generated = 0
     failed = 0
+    total_items = len(items)
 
     for index, item in enumerate(items, 1):
+        if progress_callback:
+            progress_callback(f"Generating item {index} of {total_items}…", index - 1, total_items)
         row: dict[str, Any] = {
             "index": index,
             "id": item.id,
@@ -50,11 +57,21 @@ def run_batch(
             "target_duration_seconds": item.target_duration_seconds,
         }
         try:
+            kwargs = dict(generation_kwargs)
+            if progress_callback:
+                def engine_progress(desc: str, current: int | None, total: int | None, *, _index=index) -> None:
+                    # Keep the batch item count stable and add chunk detail in the label.
+                    suffix = ""
+                    if current is not None and total:
+                        suffix = f" · chunk {current}/{total}"
+                    progress_callback(f"Item {_index}/{total_items} · {desc}{suffix}", _index - 1, total_items)
+
+                kwargs["progress_callback"] = engine_progress
             reliable = generate_reliably(
                 engine,
                 item.text,
                 policy=policy,
-                **generation_kwargs,
+                **kwargs,
             )
             selected = reliable.selected.result
             safe_id = "".join(char if char.isalnum() or char in "-_" else "-" for char in item.id).strip("-") or str(index)
@@ -78,8 +95,6 @@ def run_batch(
                     )
                     destination = fitted
                 except ValueError as exc:
-                    # Duration fitting is a convenience, not a reason to discard a valid
-                    # generation. Keep the raw take and record why fitting was skipped.
                     timing_warning = str(exc)
 
             row.update(
@@ -99,9 +114,13 @@ def run_batch(
             row.update({"status": "error", "error": str(exc)})
             failed += 1
         manifest.append(row)
+        if progress_callback:
+            progress_callback(f"Finished item {index} of {total_items}", index, total_items)
 
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    if progress_callback:
+        progress_callback("Batch complete", total_items, total_items)
     return BatchGenerationSummary(
         output_dir=output_dir,
         manifest_path=manifest_path,

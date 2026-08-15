@@ -7,6 +7,7 @@ import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from .models import (
     DEFAULT_MODEL_ID,
@@ -18,6 +19,7 @@ from .pauses import Pause, Speech, find_invalid_pause_markers, parse_script, pau
 from .text import DEFAULT_MAX_CHARS, smart_chunks
 
 DEFAULT_CHUNK_GAP_SECONDS = 0.06
+ProgressCallback = Callable[[str, int | None, int | None], None]
 
 
 @dataclass(frozen=True)
@@ -64,8 +66,6 @@ def _seed_everything(seed: int) -> None:
 
         np.random.seed(seed)
     except Exception:
-        # NumPy is present in normal Chatterbox installs, but keeping this
-        # optional makes the lightweight core easier to import/test.
         pass
 
     import torch
@@ -83,6 +83,7 @@ class ChatterboxEngine:
         self.device, self.device_label = detect_device()
         self._adapter = None
         self._model_id: str | None = None
+        self._model_paths: dict[str, Path] = {}
         self._lock = threading.RLock()
 
     @property
@@ -93,14 +94,53 @@ class ChatterboxEngine:
     def loaded_model_id(self) -> str | None:
         return self._model_id if self.loaded else None
 
+    def set_device(self, device: str, label: str | None = None) -> None:
+        """Switch compute backend safely; active model memory is released first."""
+        normalized = str(device or "cpu").lower()
+        if normalized not in {"cpu", "cuda", "mps"}:
+            raise ValueError(f"Unsupported compute device '{device}'.")
+        if normalized != self.device:
+            self.unload()
+            self.device = normalized
+        self.device_label = label or normalized.upper()
+
+    def set_model_path(self, model_id: str, path: str | Path | None) -> None:
+        """Pin a model to a local snapshot so generation never silently updates it."""
+        if model_id not in MODEL_SPECS:
+            raise ValueError(f"Unknown model '{model_id}'.")
+        new_path = Path(path).resolve() if path else None
+        previous = self._model_paths.get(model_id)
+        if self._model_id == model_id and previous != new_path:
+            self.unload()
+        if new_path is None:
+            self._model_paths.pop(model_id, None)
+        else:
+            if not new_path.exists():
+                raise FileNotFoundError(f"Local model snapshot not found: {new_path}")
+            self._model_paths[model_id] = new_path
+
     def _adapter_for(self, model_id: str):
         if model_id not in MODEL_SPECS:
             raise ValueError(f"Unknown model '{model_id}'.")
         if self._adapter is None or self._model_id != model_id:
             self.unload()
-            self._adapter = create_adapter(model_id, self.device)
+            self._adapter = create_adapter(
+                model_id,
+                self.device,
+                model_dir=self._model_paths.get(model_id),
+            )
             self._model_id = model_id
         return self._adapter
+
+    def load_model(self, model_id: str, progress_callback: ProgressCallback | None = None) -> None:
+        """Load the selected model into memory without generating audio."""
+        with self._lock:
+            if progress_callback:
+                progress_callback("Loading model into memory…", None, None)
+            adapter = self._adapter_for(model_id)
+            _ = adapter.sample_rate
+            if progress_callback:
+                progress_callback("Model ready", 1, 1)
 
     def unload(self) -> None:
         if self._adapter is not None:
@@ -145,6 +185,7 @@ class ChatterboxEngine:
         max_chars: int = DEFAULT_MAX_CHARS,
         chunk_gap_seconds: float = DEFAULT_CHUNK_GAP_SECONDS,
         seed: int | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> GenerationResult:
         import torch
         import torchaudio as ta
@@ -196,12 +237,26 @@ class ChatterboxEngine:
             if not any(isinstance(segment, Speech) for segment in segments):
                 raise ValueError("Add some text to synthesize.")
 
+        # Count only actual synthesis chunks. Digital pauses are instant and should
+        # not make the progress indicator look slower than the model really is.
+        planned_chunks = 0
+        for segment in segments:
+            if not isinstance(segment, Speech):
+                continue
+            if raw_mode or not smart_chunking:
+                planned_chunks += 1
+            else:
+                planned_chunks += len(smart_chunks(segment.text, max_chars=int(max_chars)))
+
         with self._lock:
             adapter = self._adapter_for(model_id)
             _seed_everything(actual_seed)
             clips = []
             generated_chunks: list[str] = []
             sample_rate: int | None = None
+            completed_chunks = 0
+            if progress_callback:
+                progress_callback("Loading model and preparing voice…", None, None)
 
             for segment in segments:
                 if isinstance(segment, Pause):
@@ -216,7 +271,12 @@ class ChatterboxEngine:
                     chunks = smart_chunks(segment.text, max_chars=int(max_chars))
 
                 for index, chunk in enumerate(chunks):
+                    if progress_callback:
+                        progress_callback("Generating speech…", completed_chunks, planned_chunks or None)
                     wav = adapter.generate(chunk, voice, options)
+                    completed_chunks += 1
+                    if progress_callback:
+                        progress_callback("Generating speech…", completed_chunks, planned_chunks or None)
                     if sample_rate is None:
                         sample_rate = int(adapter.sample_rate)
                     wav = self._time_stretch(wav, float(speech_speed))
@@ -233,6 +293,8 @@ class ChatterboxEngine:
             if not clips or sample_rate is None:
                 raise RuntimeError("Generation produced no audio clips.")
 
+            if progress_callback:
+                progress_callback("Saving audio…", planned_chunks, planned_chunks or None)
             final = torch.cat(clips, dim=-1)
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
             safe_model = model_id.replace("/", "-")
@@ -246,6 +308,7 @@ class ChatterboxEngine:
                 "model": {
                     "id": model_id,
                     "name": spec.name,
+                    "local_snapshot": str(self._model_paths.get(model_id)) if self._model_paths.get(model_id) else None,
                 },
                 "device": self.device_label,
                 "voice_file": voice.name,

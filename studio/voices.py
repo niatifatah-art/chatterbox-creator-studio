@@ -82,16 +82,18 @@ class VoiceLibrary:
             silence_ratio = sum(1 for value in absolute if value <= 0.004) / len(absolute)
             clipping_ratio = sum(1 for value in absolute if value >= 0.995) / len(absolute)
             warnings: list[str] = []
-            if duration < 3.0:
-                warnings.append("Reference is short; 8–15 seconds of clean speech is usually safer.")
+            if duration <= 5.0:
+                warnings.append("This sample is too short for some models; use more than 5 seconds, ideally about 8–15 seconds of clean speech.")
+            elif duration < 8.0:
+                warnings.append("This sample can work, but about 8–15 seconds of clean speech is usually safer.")
             if duration > 45.0:
-                warnings.append("Reference is long; a shorter clean excerpt is easier to manage.")
+                warnings.append("This sample is long; a shorter clean excerpt is easier to manage.")
             if silence_ratio > 0.55:
-                warnings.append("Reference contains a lot of silence.")
+                warnings.append("This sample contains a lot of silence.")
             if clipping_ratio > 0.001:
-                warnings.append("Reference may be clipping.")
+                warnings.append("This sample may be clipping.")
             if rms < 0.01:
-                warnings.append("Reference level is very quiet.")
+                warnings.append("This sample is very quiet.")
             return VoiceProfile(
                 name=profile_name,
                 path=str(path),
