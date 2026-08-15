@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from .engine import ChatterboxEngine, GenerationResult
@@ -52,7 +51,13 @@ def _candidate_passes(candidate: Candidate, policy: GenerationPolicy) -> bool:
     return quality_ok and verify_ok
 
 
-def _annotate_metadata(candidate: Candidate, selected: bool, processed: ProcessedText) -> None:
+def _annotate_metadata(
+    candidate: Candidate,
+    selected: bool,
+    processed: ProcessedText,
+    policy: GenerationPolicy,
+    implicit_best_of_quality: bool,
+) -> None:
     path = candidate.result.metadata_path
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -63,6 +68,9 @@ def _annotate_metadata(candidate: Candidate, selected: bool, processed: Processe
         "score": candidate.score,
         "preprocessed": processed.changed,
         "preprocess_warnings": list(processed.warnings),
+        "quality_check_requested": bool(policy.quality_check),
+        "quality_used_for_best_of": bool(implicit_best_of_quality),
+        "verification_requested": bool(policy.verify_stt),
         "quality": candidate.quality.__dict__ if candidate.quality else None,
         "verification": candidate.verification.__dict__ if candidate.verification else None,
     }
@@ -83,6 +91,12 @@ def generate_reliably(
     retry_budget = max(0, min(5, int(policy.auto_retries)))
     target_attempts = requested_best if requested_best > 1 else 1 + retry_budget
 
+    # Best-of needs an objective. If the user explicitly asks for multiple candidates
+    # but leaves STT/quality toggles off, use the cheap non-transforming audio QC score
+    # for ranking. This does not alter any candidate and is recorded in metadata.
+    implicit_best_of_quality = requested_best > 1 and not policy.quality_check and not policy.verify_stt
+    run_quality = bool(policy.quality_check or implicit_best_of_quality)
+
     candidates: list[Candidate] = []
     for attempt in range(target_attempts):
         kwargs = dict(generation_kwargs)
@@ -91,7 +105,7 @@ def generate_reliably(
         else:
             kwargs["seed"] = -1
         result = engine.generate(script=processed.processed, **kwargs)
-        quality = analyze_audio(result.audio_path) if policy.quality_check else None
+        quality = analyze_audio(result.audio_path) if run_quality else None
         verification = (
             verify_with_faster_whisper(
                 result.audio_path,
@@ -115,7 +129,7 @@ def generate_reliably(
 
     selected = max(candidates, key=lambda candidate: candidate.score)
     for candidate in candidates:
-        _annotate_metadata(candidate, candidate is selected, processed)
+        _annotate_metadata(candidate, candidate is selected, processed, policy, implicit_best_of_quality)
     return ReliableGenerationResult(
         selected=selected,
         candidates=tuple(candidates),
