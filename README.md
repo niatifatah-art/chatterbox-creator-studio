@@ -1,81 +1,85 @@
 # Chatterbox Creator Studio
 
-> A local, creator-first interface for **Resemble AI's Chatterbox Multilingual V3** — built because I wanted one voice tool I could open, use, and stop fighting with.
+> A local, creator-first workspace for **Resemble AI Chatterbox** — currently Multilingual V3, Turbo and Nano.
 
-Chatterbox Creator Studio turns the excellent open-source Chatterbox V3 model into a small practical studio: save a reference voice once, write a script, insert **exact digital pauses**, tune the delivery, generate, listen, and download the WAV.
-
-It is intentionally focused on **one model** instead of becoming another giant model launcher.
+Creator Studio takes the open-source Chatterbox models and gives them one practical local workflow: save a reference voice, write a script, choose the model that fits the job, generate, listen, download the WAV, and keep enough metadata to reproduce the take later.
 
 > [!IMPORTANT]
-> This is an independent community project. It is **not** an official Resemble AI product and is not endorsed by Resemble AI. The TTS model itself is Chatterbox by Resemble AI — they did the hard part. This project is a creator-oriented local UI and workflow around it.
+> This is an independent community project. It is **not** an official Resemble AI product and is not endorsed by Resemble AI. The Chatterbox models and core TTS implementation are Resemble AI's work; Creator Studio is a local UI/workflow and reliability layer around them.
 
-## Why I built it
+## v0.2 foundation
 
-I was trying to make voiceovers and kept bouncing between scripts, command lines, different Chatterbox variants, punctuation tricks, and manually adding silence in an editor. I wanted something simpler:
+The v0.2 work changes the project from a V3-specific Gradio wrapper into a model-aware local studio.
 
-- one reliable Chatterbox model;
-- one saved voice instead of finding the reference file every time;
-- creator-style writing without a complicated workflow;
-- pauses like **0.25 s or 1.375 s that are actually that long**;
-- a UI that is pleasant enough to leave open while making a video.
+### Models
 
-So this is that tool. Small first, useful first.
+| Model | Best for | Language | Studio behavior |
+|---|---|---|---|
+| **Chatterbox Multilingual V3** | general creator voiceovers, cross-language cloning | 23 languages | CFG, exaggeration, Min P and multilingual controls |
+| **Chatterbox Turbo** | fast expressive English | English | native expression tags and Top K |
+| **Chatterbox Nano** | smaller / CPU-friendly local generation | English | Turbo-style tags and Top K |
 
-## What it does
+The model is selected through a registry, so future Chatterbox variants can be added without turning the UI into model-specific spaghetti.
 
-- **Chatterbox Multilingual V3 only** — no model-choice maze.
-- **Zero-shot voice cloning** from an uploaded or recorded reference.
-- **Voice profiles** saved locally in `data/voices/`.
-- **Deterministic pauses** with `[pause=…]` syntax.
-- **Creator / Natural / Stable / Expressive** starting presets.
-- Full advanced controls for exaggeration, CFG/pacing, temperature, repetition penalty, Min P and Top P.
-- Optional **post speech-speed** control that preserves the exact digital pause durations.
-- Automatic device selection: CUDA → Apple MPS → CPU.
-- Conservative long-text chunking to reduce unstable very-long generations.
-- Local output history in `outputs/`.
-- No hosted API, account, subscription, or ZeroGPU quota.
-- Local Gradio UI with a simple dark creator-focused design.
+### Raw Chatterbox mode
 
-## Exact pause syntax
+Creator Studio now has an explicit **Raw Chatterbox** option.
 
-Chatterbox's own punctuation preprocessing does not provide deterministic timing. Creator Studio therefore handles pauses **outside the model**.
+Raw mode intentionally bypasses Studio exact-pause parsing and automatic chunking and sends the whole script directly to the selected model. It exists so creator conveniences never become mandatory behavior.
+
+Studio mode remains the recommended workflow for normal creator use.
+
+### Exact pauses
+
+In Studio mode:
 
 ```text
-I wanted a cleaner way to make voiceovers. [pause=0.35] So I built a small local studio around Chatterbox V3. [pause=800ms] It is still simple, but that is exactly what I wanted.
+This is the first line. [pause=0.35] This starts exactly 350 ms later.
 ```
 
 Supported forms:
 
 ```text
-[pause=0.25]     # 0.25 seconds
-[pause=1.375s]   # 1.375 seconds
-[pause=250ms]    # 250 milliseconds
+[pause=0.25]
+[pause=1.375s]
+[pause=250ms]
 ```
 
-At Chatterbox's 24 kHz output rate, a `0.25` second pause is inserted as exactly **6,000 zero-valued samples**. The model never sees the pause token, so it cannot pronounce `[pause]` aloud.
+The pause is inserted as real zero-valued audio samples **outside** Chatterbox, so the model never needs to understand a `[pause]` token.
 
-For safety, one pause marker is limited to 30 seconds.
+### Multilingual smart chunking
 
-## Where does the model come from?
+Long-form text can be split near sentence boundaries before synthesis. The v0.2 chunker recognizes normal Latin punctuation plus Arabic/CJK boundaries such as:
 
-**The model is not stored in this GitHub repository.**
-
-Creator Studio installs the upstream Chatterbox package from the official `resemble-ai/chatterbox` source and loads V3 explicitly:
-
-```python
-ChatterboxMultilingualTTS.from_pretrained(
-    device=device,
-    t3_model="v3",
-)
+```text
+؟ 。 ！ ？
 ```
 
-The upstream library then uses Hugging Face Hub to download the required official files from **`ResembleAI/chatterbox`**. Hugging Face stores them in its normal local cache, so after the first download they are reused rather than downloaded for every launch.
+It also tries to avoid tiny final fragments, which are undesirable for generative TTS. Smart chunking is optional and is ignored in Raw mode.
 
-The dependency is pinned in `requirements.txt` to a tested upstream source revision so the install does not silently switch to an incompatible Chatterbox implementation.
+### Reproducible takes
 
-## Privacy / local-first behavior
+Every WAV gets a JSON sidecar with the generation details:
 
-The studio server binds to:
+```text
+outputs/
+├── multilingual-v3_2026-08-15_16-20-00-123.wav
+└── multilingual-v3_2026-08-15_16-20-00-123.json
+```
+
+The metadata records the model, voice file, language, actual seed, parameters, original script and chunks sent to the model. Use seed `-1` for a fresh random seed; the chosen seed is still saved after generation.
+
+### Capability-aware controls
+
+The UI adapts to the model:
+
+- V3 exposes multilingual language selection, exaggeration, CFG and Min P.
+- Turbo/Nano lock generation to English, hide unsupported V3 controls and expose Top K.
+- Turbo/Nano show native expression-tag shortcuts such as `[laugh]`, `[chuckle]` and `[cough]`.
+
+## Local-first behavior
+
+The studio binds to:
 
 ```text
 127.0.0.1:7860
@@ -83,9 +87,9 @@ The studio server binds to:
 
 and launches Gradio with `share=False`.
 
-Your saved reference voices and generated WAV files stay in this project directory. The normal first-run network activity is downloading the official model/dependencies. This project does not upload your voice to a server owned by this project.
+Saved reference voices, settings, generated WAVs and metadata remain in the project directory. Normal first-run network activity is downloading the official Chatterbox model files/dependencies; Hugging Face caches them for later reuse.
 
-> Treat voice cloning responsibly: only clone voices you have the right and consent to use.
+> Only clone voices you have the right and consent to use.
 
 ---
 
@@ -93,14 +97,10 @@ Your saved reference voices and generated WAV files stay in this project directo
 
 ## Windows 10 / 11
 
-### 1. Install prerequisites
-
 You need:
 
 - **Git**
 - **Python 3.11 (64-bit)**
-
-Python 3.11 is the version used for the primary setup because upstream Chatterbox documents development/testing on Python 3.11 and it avoids the dependency surprises that can occur on newer Python versions.
 
 Check:
 
@@ -109,7 +109,7 @@ git --version
 py -3.11 --version
 ```
 
-### 2. Clone this repository
+Clone the repository:
 
 ```powershell
 mkdir C:\AI -ErrorAction SilentlyContinue
@@ -118,41 +118,21 @@ git clone https://github.com/niatifatah-art/chatterbox-creator-studio.git
 cd chatterbox-creator-studio
 ```
 
-### 3. Run setup
-
-Double-click:
-
-```text
-scripts\setup_windows.bat
-```
-
-or from PowerShell:
+Run setup:
 
 ```powershell
 .\scripts\setup_windows.bat
 ```
 
-The script creates a project-local `.venv` and installs everything inside it. It does **not** rely on whatever random `python` happens to be first in your Windows PATH.
+Then start:
 
-### 4. Start the studio
-
-Double-click:
-
-```text
-scripts\start_windows.bat
+```powershell
+.\scripts\start_windows.bat
 ```
 
-The browser should open automatically at:
-
-```text
-http://127.0.0.1:7860
-```
-
-The **first generation** can take a while because the official model files need to be downloaded. Later launches reuse the Hugging Face cache.
+The browser should open at `http://127.0.0.1:7860`.
 
 ## Linux
-
-Install Git, Python 3.11, and the normal Python venv support for your distro, then:
 
 ```bash
 git clone https://github.com/niatifatah-art/chatterbox-creator-studio.git
@@ -167,148 +147,137 @@ The UI opens locally at `http://127.0.0.1:7860`.
 
 # First use
 
-1. Open **Add reference voice**.
-2. Upload or record a clean voice sample.
-3. Give it a short name such as `My Voice`.
-4. Click **Save voice**.
-5. Write your script.
-6. Add exact timing where useful, e.g. `[pause=0.35]`.
-7. Start with the **Creator** preset or **Natural** preset.
-8. Click **Generate voice**.
-9. Listen in the browser or download the generated WAV.
+1. Add or record a clean reference voice.
+2. Save the voice profile.
+3. Choose **V3**, **Turbo**, or **Nano**.
+4. Choose the language when using V3.
+5. Write the script.
+6. Leave **Raw Chatterbox** off for normal Studio behavior.
+7. Add `[pause=...]` markers where exact timing matters.
+8. Generate and listen.
+9. Download the WAV; keep the metadata JSON if you want exact settings later.
 
-A clean reference of roughly **10 seconds or more** is a good starting point. Avoid background music, multiple speakers, heavy reverb, or long silence in the reference.
+A clean reference of roughly 10 seconds or more is a good starting point. Avoid background music, multiple speakers, heavy reverb, clipping, or long silence in the reference.
 
 ## Presets
 
-Presets are only starting points. You can open **Advanced settings** and change every value.
+Presets are starting points, not hidden magic. Advanced controls remain available where the selected model supports them.
 
 | Preset | Intent |
 |---|---|
-| **Natural** | Upstream-like general starting point |
-| **Creator** | Conversational creator starting point with lower CFG/pacing |
-| **Stable** | More conservative sampling for difficult lines |
-| **Expressive** | Higher exaggeration with lower CFG |
+| **Natural** | upstream-like general starting point |
+| **Creator** | conversational V3 starting point with lower CFG/pacing |
+| **Stable** | more conservative sampling for difficult lines |
+| **Expressive** | higher V3 exaggeration with lower CFG |
 
-The `Creator` preset is a community preset, not an official Resemble AI preset. It intentionally starts with lower CFG/pacing and moderate exaggeration because upstream Chatterbox guidance notes that lower CFG can help fast reference speakers, while expressive speech often benefits from lower CFG plus higher exaggeration.
+All presets keep **Post speech speed at `1.00x` by default**. Non-1.00 values use waveform time stretching and can introduce metallic or phasey artifacts.
 
-All presets keep **Post speech speed at `1.00x` by default** so the model's waveform is not time-stretched after generation.
+## Long-form controls
 
-## Speech speed vs. pause speed
+Studio mode exposes:
 
-The optional **Post speech speed** slider time-stretches only generated speech. Explicit pauses are inserted **after** speech post-processing, so:
+- target maximum characters per automatic chunk;
+- digital gap between automatic chunks;
+- a Smart chunking on/off switch.
 
-```text
-[pause=0.350]
-```
+Raw mode bypasses all three.
 
-remains 350 ms even if speech speed is changed.
+## Memory
 
-For the cleanest voice quality, keep **Post speech speed at `1.00x`**. Values above or below `1.00x` use waveform post-processing and can introduce metallic, phasey, or robotic artifacts on some voices. Prefer Chatterbox's CFG/pacing control and explicit pauses when possible.
+Only one Chatterbox model is kept active by Creator Studio at a time. Switching models unloads the previous adapter, and the UI also provides an **Unload current model** button for users who want to free RAM/VRAM manually.
 
 ---
 
-# Files and folders
+# Project structure
 
 ```text
 chatterbox-creator-studio/
-├── app.py                    # Gradio UI
+├── app.py                    # Gradio UI / orchestration only
 ├── studio/
-│   ├── engine.py             # Chatterbox loading/generation
+│   ├── engine.py             # model-independent generation pipeline
+│   ├── models.py             # model registry + V3/Turbo/Nano adapters
+│   ├── text.py               # multilingual smart chunking
 │   ├── pauses.py             # deterministic pause parser
-│   ├── presets.py            # generation presets
+│   ├── presets.py            # creator presets
 │   ├── settings.py           # local settings persistence
 │   └── voices.py             # local voice profiles
-├── assets/style.css          # UI styling
+├── assets/style.css
+├── docs/ARCHITECTURE.md
 ├── scripts/
-│   ├── setup_windows.bat
-│   ├── start_windows.bat
-│   ├── setup_linux.sh
-│   └── start_linux.sh
-├── data/
-│   ├── voices/               # your private reference voices (gitignored)
-│   └── settings.json         # your last settings (gitignored)
-├── outputs/                  # generated WAV files (gitignored)
+├── data/voices/              # private reference voices (gitignored)
+├── outputs/                  # generated WAV + JSON metadata (gitignored)
 └── tests/                    # model-free core tests
 ```
 
-Do **not** commit your reference voices unless you deliberately intend to publish them. `.gitignore` excludes them by default.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design rules behind the v0.2 refactor.
 
 # CPU and GPU
 
-Creator Studio chooses a device automatically:
+Device selection is automatic:
 
-1. NVIDIA CUDA if PyTorch can use it;
+1. NVIDIA CUDA when available;
 2. Apple MPS on supported Macs;
 3. CPU otherwise.
 
-V3 is a 500M-class model, so CPU generation can be much slower than real time. The UI is still fully usable on CPU; generation simply takes longer.
+Nano is the model intended for the smallest resource budget. V3 is much heavier, and CPU generation can be substantially slower than real time.
 
 # Troubleshooting
 
-## `voice.wav.wav`
+## First generation looks frozen
 
-Windows Explorer can hide known file extensions, which makes it surprisingly easy to rename `voice.wav` into `voice.wav.wav`. Creator Studio avoids requiring a specific filename: save the voice through the UI and it creates the profile path for you.
-
-## The first generation looks frozen
-
-Watch the terminal window. On first use, Hugging Face may be downloading several gigabytes of model files. This is expected. Do not close the process during the download.
-
-## Hugging Face symlink warning on Windows
-
-Hugging Face can warn that Windows symlinks are unavailable unless Developer Mode is enabled. The cache can still work, but may use more disk space. Enabling Windows Developer Mode removes that limitation; it is not required just to generate speech.
+Watch the terminal. The selected official model may still be downloading from Hugging Face. Later launches reuse the local cache.
 
 ## Output is too fast
 
-Try the **Creator** preset first. Then adjust:
+For V3, start with the **Creator** preset and use exact pauses where timing matters. Keep Post speech speed at `1.00x` unless you intentionally want waveform time stretching.
 
-- lower **CFG / pacing** toward `0.30`;
-- use explicit `[pause=…]` markers rather than hoping punctuation produces a specific duration;
-- keep **Post speech speed at `1.00x`** for cleanest quality unless you deliberately accept post-processing artifacts.
+## Output sounds metallic or phasey
 
-## Output sounds metallic or robotic
+Set **Post speech speed** to exactly `1.00x` and regenerate before changing the model controls. Time stretching can introduce artifacts that are not present in the underlying Chatterbox output.
 
-First check **Post speech speed**. Set it to exactly `1.00x` and regenerate the same text before changing anything else. Time-stretching generated speech can introduce metallic or phasey artifacts even when the underlying Chatterbox output is clean.
+## A short phrase hallucinates
 
-If the artifact remains at `1.00x`, try a clean unprocessed reference clip and then adjust exaggeration / CFG conservatively.
+Generative TTS can be unstable on tiny fragments. In Studio mode, leave Smart chunking enabled for long scripts so short neighboring sentences can be combined where possible. Raw mode is available when you deliberately want upstream behavior without Studio assistance.
 
-## A long line becomes unstable
+## I wrote `[pause=0.5]` and the model spoke it
 
-Creator Studio conservatively chunks long speech near sentence boundaries before sending it to the model. For best creator pacing, explicit script sections plus `[pause=…]` still give the most predictable result.
-
-## Hallucinations / repetition
-
-Chatterbox Multilingual V3 was released with improved stability and reduced unwanted continuation, repetition, and off-prompt speech compared with earlier multilingual versions, but no generative TTS model can truthfully promise zero errors in every generation.
-
-If one result is bad, regenerate it or split the line into smaller sections. Automatic speech verification/retry is a possible future feature, but is intentionally not required by v0.1 so the studio stays lightweight.
+Check **Raw Chatterbox**. Exact Studio pause parsing is intentionally disabled in Raw mode.
 
 # Development
 
-The core pause parser and chunker can be tested without downloading the TTS model:
+Core tests do not download a TTS model:
 
 ```bash
 python -m pip install -r requirements-dev.txt
 pytest -q
 ```
 
-GitHub Actions runs these lightweight tests on every push and pull request.
+GitHub Actions runs the lightweight tests on pushes and pull requests.
+
+# Roadmap
+
+After the v0.2 foundation is stable, the planned local-only layers are:
+
+- Projects and Takes;
+- richer Voice Library and reference diagnostics;
+- Batch / SRT / VTT workflows;
+- optional bad-generation detection and retry;
+- optional local STT verification;
+- optional text normalization and audio post-processing;
+- model manager, diagnostics and packaging polish.
+
+These features will be built on the core rather than silently forced into generation.
 
 # Credits
 
-The model and core TTS implementation are **Chatterbox by Resemble AI**. This UI would not exist without their open-source work.
+The models and core TTS implementation are **Chatterbox by Resemble AI**. This UI would not exist without their open-source work.
 
-- Upstream project: `resemble-ai/chatterbox`
-- Model: **Chatterbox Multilingual V3**
-- Generated audio includes the upstream **PerTh** neural watermarking behavior.
+The upstream package is pinned to a tested source revision so V3/Turbo/Nano support does not silently change underneath Creator Studio.
+
+Generated audio retains the upstream Chatterbox watermarking behavior.
 
 See [`NOTICE.md`](NOTICE.md) for attribution details.
 
 # License
 
-This Creator Studio code is released under the **MIT License**. Chatterbox and its model assets remain subject to their upstream license and notices.
-
----
-
-### Current goal
-
-Make voice generation boring in the best possible way: open the studio, pick the voice, type the line, get the WAV, continue making the video.
+Creator Studio code is released under the **MIT License**. Chatterbox model/package assets remain subject to their upstream licenses and notices.
