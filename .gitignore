@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local creator data — never commit voices or generated audio
+data/voices/*
+!data/voices/.gitkeep
+data/settings.json
+outputs/*
+!outputs/.gitkeep
+
+# Model/cache artifacts
+*.safetensors
+*.pt
+*.ckpt
+.huggingface/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
