@@ -14,7 +14,9 @@ def _utc_now() -> str:
 
 
 def _slug(value: str, fallback: str = "project") -> str:
-    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", (value or fallback).strip()).strip("-._")
+    # Python's Unicode-aware \w preserves Arabic/CJK/etc. letters while still
+    # stripping path separators and punctuation that should not become folders.
+    clean = re.sub(r"[^\w.-]+", "-", (value or fallback).strip(), flags=re.UNICODE).strip("-._")
     return clean or fallback
 
 
