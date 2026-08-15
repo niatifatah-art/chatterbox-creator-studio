@@ -31,10 +31,18 @@ MULTILINGUAL_LANGUAGES: dict[str, str] = {
     "zh": "Chinese",
 }
 
+# Keep this list aligned with the official Turbo demo at the pinned upstream
+# Chatterbox revision. Nano shares the Turbo text/tokenizer architecture.
 PARALINGUISTIC_TAGS: tuple[str, ...] = (
-    "[laugh]",
-    "[chuckle]",
+    "[clear throat]",
+    "[sigh]",
+    "[shush]",
     "[cough]",
+    "[groan]",
+    "[sniff]",
+    "[gasp]",
+    "[chuckle]",
+    "[laugh]",
 )
 
 
