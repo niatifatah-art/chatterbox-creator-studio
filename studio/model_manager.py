@@ -214,6 +214,13 @@ class LocalModelManager:
         }
         self._save_state(state)
 
+    def _forget_model(self, model_id: str) -> None:
+        state = self._load_state()
+        models = state.setdefault("models", {})
+        if model_id in models:
+            del models[model_id]
+            self._save_state(state)
+
     @staticmethod
     def _tqdm_class(progress: ProgressCallback | None):
         if progress is None:
@@ -311,6 +318,9 @@ class LocalModelManager:
         current = self.status(model_id)
         if not current.installed or offline:
             return current
+        # A user may have just turned Offline mode off in the UI without saving
+        # settings yet. Keep the Hub runtime flag aligned with the requested action.
+        set_hf_offline(False)
         spec = MODEL_DOWNLOAD_SPECS[model_id]
         try:
             from huggingface_hub import HfApi
@@ -336,28 +346,95 @@ class LocalModelManager:
         # Refresh the tracked remote ref while reusing unchanged cached blobs.
         # This downloads only what the newly selected snapshot needs; it does not
         # blindly re-fetch every model file.
-        status = self.download(model_id, refresh=True, force_files=False, offline=False, progress=progress)
-        return status
+        return self.download(model_id, refresh=True, force_files=False, offline=False, progress=progress)
+
+    @staticmethod
+    def _safe_fallback_delete_snapshot(cache: Path, snapshot: Path, revision: str) -> bool:
+        """Delete only one selected snapshot if the Hub cache helper is unavailable.
+
+        This deliberately leaves shared blobs behind rather than risking another
+        application's snapshots. The normal product environment has
+        huggingface_hub installed and uses its reference-aware deletion strategy.
+        """
+        snapshots_root = (cache / "snapshots").resolve()
+        try:
+            resolved_snapshot = snapshot.resolve()
+            resolved_snapshot.relative_to(snapshots_root)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Refusing to remove an unexpected model snapshot path.") from exc
+        if resolved_snapshot.name != revision:
+            raise RuntimeError("Refusing to remove a snapshot whose version does not match the selected model.")
+
+        removed = False
+        if resolved_snapshot.exists():
+            shutil.rmtree(resolved_snapshot)
+            removed = True
+
+        refs = cache / "refs"
+        if refs.exists():
+            for ref in refs.rglob("*"):
+                if not ref.is_file():
+                    continue
+                try:
+                    if ref.read_text(encoding="utf-8").strip() == revision:
+                        ref.unlink()
+                except OSError:
+                    continue
+        for directory in (cache / "snapshots", cache / "refs"):
+            try:
+                if directory.exists() and not any(directory.iterdir()):
+                    directory.rmdir()
+            except OSError:
+                pass
+        return removed
 
     def remove(self, model_id: str) -> bool:
+        """Remove only the exact model revision selected by this app.
+
+        Hugging Face's cache is shared by libraries and applications. Deleting the
+        whole repository cache can therefore break unrelated local workflows,
+        especially for the multi-model ResembleAI/chatterbox repository. The Hub's
+        revision-aware deletion strategy removes the selected snapshot and only
+        blobs no longer referenced by another cached revision.
+        """
         if model_id not in MODEL_DOWNLOAD_SPECS:
             return False
+        status = self.status(model_id)
+        if not status.installed or not status.snapshot_path or not status.revision:
+            self._forget_model(model_id)
+            return False
+
         spec = MODEL_DOWNLOAD_SPECS[model_id]
         cache = self._cache_dir(spec)
         root = hf_hub_dir().resolve()
         try:
-            resolved = cache.resolve()
-        except OSError:
-            resolved = cache.absolute()
-        if resolved.parent != root or not resolved.name.startswith("models--ResembleAI--"):
+            resolved_cache = cache.resolve()
+            resolved_snapshot = Path(status.snapshot_path).resolve()
+        except OSError as exc:
+            raise RuntimeError("Could not resolve the selected model cache safely.") from exc
+        if resolved_cache.parent != root or not resolved_cache.name.startswith("models--ResembleAI--"):
             raise RuntimeError("Refusing to remove an unexpected cache path.")
+        try:
+            resolved_snapshot.relative_to((resolved_cache / "snapshots").resolve())
+        except ValueError as exc:
+            raise RuntimeError("Refusing to remove a model outside its expected cache.") from exc
+
         removed = False
-        if cache.exists():
-            shutil.rmtree(cache)
-            removed = True
-        state = self._load_state()
-        models = state.setdefault("models", {})
-        if model_id in models:
-            del models[model_id]
-            self._save_state(state)
+        try:
+            from huggingface_hub import scan_cache_dir
+
+            strategy = scan_cache_dir(cache_dir=root).delete_revisions(status.revision)
+            strategy.execute()
+            removed = not resolved_snapshot.exists()
+        except ImportError:
+            removed = self._safe_fallback_delete_snapshot(resolved_cache, resolved_snapshot, status.revision)
+        except Exception as exc:
+            # A corrupted global Hub cache should not tempt the app into a broad
+            # recursive delete. Fall back to deleting only the selected snapshot.
+            try:
+                removed = self._safe_fallback_delete_snapshot(resolved_cache, resolved_snapshot, status.revision)
+            except Exception:
+                raise RuntimeError(f"Could not remove the selected model safely: {exc}") from exc
+
+        self._forget_model(model_id)
         return removed
