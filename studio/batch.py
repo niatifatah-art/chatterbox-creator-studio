@@ -6,11 +6,6 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-_TIME_RE = re.compile(
-    r"(?P<h>\d{1,2}):(?P<m>\d{2}):(?P<s>\d{2})[,.](?P<ms>\d{3})\s*-->\s*"
-    r"(?P<h2>\d{1,2}):(?P<m2>\d{2}):(?P<s2>\d{2})[,.](?P<ms2>\d{3})"
-)
-
 
 @dataclass(frozen=True)
 class BatchItem:
@@ -26,12 +21,36 @@ class BatchItem:
         return max(0.0, self.end_seconds - self.start_seconds)
 
 
-def _seconds(h: str, m: str, s: str, ms: str) -> float:
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+def _parse_timestamp(value: str) -> float:
+    """Parse SRT HH:MM:SS,mmm and WebVTT [HH:]MM:SS.mmm timestamps."""
+    token = (value or "").strip().split()[0].replace(",", ".")
+    parts = token.split(":")
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+    elif len(parts) == 2:
+        hours = "0"
+        minutes, seconds = parts
+    else:
+        raise ValueError(f"Invalid subtitle timestamp: {value!r}")
+    result = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    if result < 0:
+        raise ValueError(f"Invalid subtitle timestamp: {value!r}")
+    return result
+
+
+def _parse_time_value(value) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if ":" in text:
+        return _parse_timestamp(text)
+    return float(text)
 
 
 def parse_srt_or_vtt(text: str) -> list[BatchItem]:
-    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
     if cleaned.lstrip().startswith("WEBVTT"):
         cleaned = cleaned.lstrip()[6:].lstrip("\n")
     blocks = re.split(r"\n\s*\n", cleaned.strip()) if cleaned.strip() else []
@@ -41,15 +60,21 @@ def parse_srt_or_vtt(text: str) -> list[BatchItem]:
         lines = [line.strip() for line in block.splitlines() if line.strip()]
         if not lines:
             continue
+        # Ignore WebVTT NOTE/STYLE/REGION blocks rather than mistaking their text for cues.
+        if lines[0].upper().startswith(("NOTE", "STYLE", "REGION")):
+            continue
         timing_index = next((index for index, line in enumerate(lines) if "-->" in line), None)
         if timing_index is None:
             continue
-        match = _TIME_RE.search(lines[timing_index])
-        if not match:
+        try:
+            start_text, end_text = lines[timing_index].split("-->", 1)
+            start = _parse_timestamp(start_text)
+            # WebVTT may append cue settings after the end timestamp.
+            end = _parse_timestamp(end_text)
+        except (ValueError, TypeError):
             continue
-        groups = match.groupdict()
-        start = _seconds(groups["h"], groups["m"], groups["s"], groups["ms"])
-        end = _seconds(groups["h2"], groups["m2"], groups["s2"], groups["ms2"])
+        if end < start:
+            continue
         cue_id = lines[0] if timing_index > 0 and "-->" not in lines[0] else str(auto_id)
         cue_text = " ".join(lines[timing_index + 1 :]).strip()
         if cue_text:
@@ -84,12 +109,17 @@ def parse_json(text: str) -> list[BatchItem]:
             continue
         start = entry.get("start_seconds", entry.get("start"))
         end = entry.get("end_seconds", entry.get("end"))
+        try:
+            start_seconds = _parse_time_value(start)
+            end_seconds = _parse_time_value(end)
+        except ValueError as exc:
+            raise ValueError(f"Invalid timing in JSON item {entry.get('id') or index}: {exc}") from exc
         items.append(
             BatchItem(
                 id=str(entry.get("id") or index),
                 text=value,
-                start_seconds=float(start) if start is not None else None,
-                end_seconds=float(end) if end is not None else None,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
             )
         )
     return items
@@ -105,12 +135,17 @@ def parse_csv_file(path: Path) -> list[BatchItem]:
                 continue
             start = row.get("start_seconds") or row.get("start")
             end = row.get("end_seconds") or row.get("end")
+            try:
+                start_seconds = _parse_time_value(start)
+                end_seconds = _parse_time_value(end)
+            except ValueError as exc:
+                raise ValueError(f"Invalid timing in CSV row {index}: {exc}") from exc
             items.append(
                 BatchItem(
                     id=str(row.get("id") or index),
                     text=value,
-                    start_seconds=float(start) if start not in (None, "") else None,
-                    end_seconds=float(end) if end not in (None, "") else None,
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
                 )
             )
     return items
