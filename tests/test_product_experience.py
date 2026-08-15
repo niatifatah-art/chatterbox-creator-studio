@@ -133,15 +133,20 @@ def test_existing_hf_cache_is_imported_and_pinned(monkeypatch, tmp_path: Path):
     assert Path(pinned.snapshot_path or "") == snapshot
 
 
-def test_remove_model_never_touches_projects_or_voices(monkeypatch, tmp_path: Path):
+def test_remove_model_never_touches_projects_voices_or_other_revisions(monkeypatch, tmp_path: Path):
     hub = tmp_path / "hub"
     monkeypatch.setenv("HF_HUB_CACHE", str(hub))
     cache = hub / "models--ResembleAI--chatterbox-nano"
     snapshot = cache / "snapshots" / "abc123"
     snapshot.mkdir(parents=True)
     (snapshot / "weights.safetensors").write_bytes(b"1234")
+    newer = cache / "snapshots" / "def456"
+    newer.mkdir(parents=True)
+    (newer / "other.safetensors").write_bytes(b"5678")
     (cache / "refs").mkdir()
     (cache / "refs" / "main").write_text("abc123", encoding="utf-8")
+    (cache / "refs" / "other").write_text("def456", encoding="utf-8")
+
     voices = tmp_path / "data" / "voices"
     projects = tmp_path / "data" / "projects"
     voices.mkdir(parents=True)
@@ -150,8 +155,10 @@ def test_remove_model_never_touches_projects_or_voices(monkeypatch, tmp_path: Pa
     (projects / "project.json").write_text("{}", encoding="utf-8")
 
     manager = LocalModelManager(tmp_path / "model_state.json")
-    assert manager.status("nano").installed
+    assert manager.status("nano").revision == "abc123"
     assert manager.remove("nano") is True
-    assert not cache.exists()
+    assert not snapshot.exists()
+    assert newer.exists()
+    assert (cache / "refs" / "other").exists()
     assert (voices / "voice.wav").exists()
     assert (projects / "project.json").exists()
