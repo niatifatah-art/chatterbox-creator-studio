@@ -9,6 +9,7 @@ import torchaudio
 
 from studio.engine import ChatterboxEngine
 from studio.models import MODEL_SPECS
+from studio.quality import analyze_audio
 
 
 def main() -> None:
@@ -56,6 +57,12 @@ def main() -> None:
     if not torch.isfinite(wav).all():
         raise RuntimeError("Generated WAV contains NaN or infinite samples")
 
+    quality = analyze_audio(result.audio_path)
+    if quality.duration_seconds <= 0.1:
+        raise RuntimeError("Quality analyzer reported an invalid duration")
+    if not 0.0 <= quality.score <= 1.0:
+        raise RuntimeError("Quality analyzer returned an invalid score")
+
     # The last 0.15 s is inside the explicit 0.20 s Studio pause and therefore
     # should be mathematically silent; this verifies that the pause was handled
     # outside the model and survived WAV serialization.
@@ -100,6 +107,8 @@ def main() -> None:
                 "model": args.model,
                 "sample_rate": sample_rate,
                 "samples": int(wav.shape[-1]),
+                "quality_score": quality.score,
+                "quality_warnings": list(quality.warnings),
                 "wav": str(result.audio_path),
                 "metadata": str(result.metadata_path),
             },

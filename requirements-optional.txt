@@ -1,0 +1,4 @@
+# Optional extras. The core Studio does not require these.
+# Install only when you want the corresponding feature.
+faster-whisper>=1.1.0
+num2words>=0.5.14

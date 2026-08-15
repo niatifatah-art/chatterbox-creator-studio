@@ -6,6 +6,7 @@ from typing import Any
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "voice": None,
+    "project": None,
     "model_id": "multilingual-v3",
     "language": "en",
     "preset": "Creator",
@@ -22,6 +23,23 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_chars": 280,
     "chunk_gap_seconds": 0.06,
     "seed": -1,
+    "normalize_unicode": True,
+    "normalize_punctuation": False,
+    "normalize_numbers": False,
+    "replace_urls": False,
+    "collapse_repeated_punctuation": False,
+    "normalize_whitespace": True,
+    "quality_check": False,
+    "verify_stt": False,
+    "whisper_model": "tiny",
+    "verification_threshold": 0.78,
+    "auto_retries": 0,
+    "best_of_n": 1,
+    "trim_silence": False,
+    "peak_normalize": False,
+    "fade_ms": 0,
+    "batch_fit_timing": False,
+    "batch_max_stretch": 1.18,
 }
 
 

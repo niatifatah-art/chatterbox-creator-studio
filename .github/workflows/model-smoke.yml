@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - dev/v0.2-foundation
+      - dev/v1.0-creator-suite
     paths:
       - "studio/**"
       - "app.py"
       - "requirements.txt"
+      - "requirements-optional.txt"
       - "scripts/smoke_models.py"
       - ".github/workflows/model-smoke.yml"
 
