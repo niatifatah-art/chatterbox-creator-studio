@@ -12,5 +12,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install -r requirements-dev.txt
-      - run: pytest -q
+      - name: Install lightweight development dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile Python sources
+        run: python -m compileall -q app.py studio scripts tests
+      - name: Run model-free tests
+        run: pytest -q
+      - name: Smoke CLI parser and model registry
+        run: |
+          python -m studio --help >/dev/null
+          python -m studio models
