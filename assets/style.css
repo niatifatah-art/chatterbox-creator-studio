@@ -1,7 +1,7 @@
 :root {
   --studio-bg: #0b0d12;
-  --studio-card: rgba(20, 24, 33, 0.88);
-  --studio-card-2: rgba(27, 32, 43, 0.88);
+  --studio-card: rgba(20, 24, 33, 0.90);
+  --studio-card-2: rgba(27, 32, 43, 0.90);
   --studio-border: rgba(255, 255, 255, 0.08);
   --studio-border-strong: rgba(255, 255, 255, 0.14);
   --studio-text: #f5f7fb;
@@ -9,6 +9,8 @@
   --studio-accent: #ff7a45;
   --studio-accent-2: #ffb35c;
 }
+
+html { scroll-behavior: smooth; }
 
 body, .gradio-container {
   background:
@@ -19,8 +21,9 @@ body, .gradio-container {
 }
 
 .gradio-container {
-  max-width: 1360px !important;
+  max-width: 1400px !important;
   margin: 0 auto !important;
+  padding-inline: clamp(.7rem, 2vw, 1.4rem) !important;
 }
 
 .hero {
@@ -44,7 +47,7 @@ body, .gradio-container {
   color: transparent;
 }
 .hero p {
-  max-width: 900px;
+  max-width: 960px;
   margin: .8rem 0 0;
   color: var(--studio-muted);
   font-size: 1.02rem;
@@ -67,6 +70,7 @@ body, .gradio-container {
   background: rgba(255,255,255,.035);
   font-size: .82rem;
   font-weight: 720;
+  backdrop-filter: blur(10px);
 }
 .model-strip small {
   color: var(--studio-muted);
@@ -75,20 +79,23 @@ body, .gradio-container {
 }
 
 .main-panel, .side-panel {
-  background: linear-gradient(180deg, var(--studio-card), rgba(15,18,25,.82));
+  background: linear-gradient(180deg, var(--studio-card), rgba(15,18,25,.84));
   border: 1px solid var(--studio-border) !important;
   border-radius: 20px !important;
   padding: 1rem !important;
   box-shadow: 0 22px 65px rgba(0,0,0,.20);
+  backdrop-filter: blur(18px);
 }
 .side-panel {
-  background: linear-gradient(180deg, var(--studio-card-2), rgba(16,19,27,.88));
+  background: linear-gradient(180deg, var(--studio-card-2), rgba(16,19,27,.90));
 }
 
+/* Keep the large script editor readable for long-form work. */
 #script-box textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
   font-size: 15px !important;
   line-height: 1.65 !important;
+  tab-size: 2;
 }
 
 #generate-btn {
@@ -98,6 +105,12 @@ body, .gradio-container {
   background: linear-gradient(120deg, var(--studio-accent), #ff9956) !important;
   border: none !important;
   box-shadow: 0 10px 28px rgba(255,122,69,.20) !important;
+  transition: transform .14s ease, box-shadow .14s ease, filter .14s ease;
+}
+#generate-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+  box-shadow: 0 13px 35px rgba(255,122,69,.28) !important;
 }
 
 .mode-note, .model-note {
@@ -107,8 +120,41 @@ body, .gradio-container {
   background: rgba(255,255,255,.025) !important;
   color: var(--studio-muted) !important;
 }
-.model-note strong, .mode-note strong {
-  color: var(--studio-text);
+.model-note strong, .mode-note strong { color: var(--studio-text); }
+
+/* Tabs act like product navigation rather than a raw demo notebook. */
+.gradio-container .tabs > .tab-nav,
+.gradio-container [role="tablist"] {
+  gap: .3rem;
+  padding: .35rem;
+  border: 1px solid var(--studio-border);
+  border-radius: 14px;
+  background: rgba(255,255,255,.025);
+  margin-bottom: .9rem;
+}
+.gradio-container [role="tab"] {
+  border-radius: 10px !important;
+  font-weight: 650 !important;
+}
+
+/* Give utility surfaces a quieter workstation feel. */
+.gradio-container table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.gradio-container code,
+.gradio-container pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+.gradio-container button {
+  transition: border-color .14s ease, background .14s ease, transform .14s ease;
+}
+.gradio-container button:focus-visible,
+.gradio-container textarea:focus-visible,
+.gradio-container input:focus-visible {
+  outline: 2px solid rgba(255,179,92,.55) !important;
+  outline-offset: 2px;
 }
 
 .tip-card {
@@ -131,6 +177,8 @@ body, .gradio-container {
 
 @media (max-width: 760px) {
   .hero { padding-top: 1.25rem; }
+  .hero p { font-size: .94rem; }
   .main-panel, .side-panel { border-radius: 15px !important; }
   .model-strip { gap: .4rem; }
+  .model-strip span { font-size: .76rem; }
 }
