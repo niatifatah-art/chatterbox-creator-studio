@@ -61,7 +61,8 @@ def test_batch_parses_srt_vtt_json_and_txt():
 
 def test_project_store_round_trip_and_takes(tmp_path):
     store = ProjectStore(tmp_path / "projects")
-    project = store.create("My Video")
+    project = store.create("مشروع صوتي")
+    assert "مشروع" in project["id"]
     saved = store.save(project["id"], {"script": "hello", "voice": "me"})
     assert saved["script"] == "hello"
     assert store.list()[0].id == project["id"]
@@ -80,8 +81,8 @@ def test_voice_library_management_and_analysis(tmp_path):
     source = tmp_path / "source.wav"
     _write_wav(source, 1.0)
     library = VoiceLibrary(tmp_path / "voices")
-    name, path = library.save(str(source), "Test Voice")
-    assert name == "Test-Voice"
+    name, path = library.save(str(source), "صوت تجريبي")
+    assert name == "صوت-تجريبي"
     profile = library.profile(name)
     assert profile is not None
     assert 0.9 < profile.duration_seconds < 1.1
