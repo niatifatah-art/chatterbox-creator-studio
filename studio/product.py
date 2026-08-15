@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -62,21 +61,50 @@ def contains_expression_tag(text: str) -> bool:
     return any(tag.lower() in lowered for tag in PARALINGUISTIC_TAGS)
 
 
-def script_looks_arabic(text: str) -> bool:
-    """Conservative Arabic-script hint used only when Language is set to Auto."""
+def _in_ranges(char: str, ranges: tuple[tuple[int, int], ...]) -> bool:
+    value = ord(char)
+    return any(start <= value <= end for start, end in ranges)
+
+
+def detect_script_language(text: str) -> str | None:
+    """Detect languages with distinctive scripts without a heavy language model.
+
+    Latin-script languages are intentionally not guessed: short creator scripts are
+    easy to misclassify. They remain English in Auto unless the user chooses a
+    language. Distinctive scripts can be recognized conservatively and allow Auto
+    to pick the multilingual model without exposing another setup step.
+    """
     letters = [char for char in (text or "") if char.isalpha()]
     if not letters:
-        return False
-    arabic = sum(1 for char in letters if "\u0600" <= char <= "\u06ff" or "\u0750" <= char <= "\u077f" or "\u08a0" <= char <= "\u08ff")
-    return arabic / len(letters) >= 0.30
+        return None
+
+    # Check Japanese/Korean before Han so mixed Japanese text is not called Chinese.
+    groups: tuple[tuple[str, tuple[tuple[int, int], ...], float], ...] = (
+        ("Japanese", ((0x3040, 0x30FF), (0x31F0, 0x31FF)), 0.08),
+        ("Korean", ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)), 0.20),
+        ("Arabic", ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF)), 0.20),
+        ("Hebrew", ((0x0590, 0x05FF),), 0.20),
+        ("Hindi", ((0x0900, 0x097F),), 0.20),
+        ("Greek", ((0x0370, 0x03FF), (0x1F00, 0x1FFF)), 0.20),
+        ("Russian", ((0x0400, 0x052F),), 0.20),
+        ("Chinese", ((0x3400, 0x4DBF), (0x4E00, 0x9FFF)), 0.20),
+    )
+    for language, ranges, threshold in groups:
+        matches = sum(1 for char in letters if _in_ranges(char, ranges))
+        if matches / len(letters) >= threshold:
+            return language
+    return None
+
+
+def script_looks_arabic(text: str) -> bool:
+    """Backward-compatible helper retained for tests/extensions."""
+    return detect_script_language(text) == "Arabic"
 
 
 def resolve_language(language_ui: str | None, script: str) -> str:
     if language_ui and language_ui != "Auto":
         return language_ui
-    if script_looks_arabic(script):
-        return "Arabic"
-    return "English"
+    return detect_script_language(script) or "English"
 
 
 def resolve_model_id(
