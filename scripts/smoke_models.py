@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+import torchaudio
+
+from studio.engine import ChatterboxEngine
+from studio.models import MODEL_SPECS
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Real Chatterbox model smoke test")
+    parser.add_argument("--model", required=True, choices=sorted(MODEL_SPECS))
+    parser.add_argument("--voice", required=True)
+    parser.add_argument("--output-dir", default="smoke-output")
+    args = parser.parse_args()
+
+    voice = Path(args.voice)
+    if not voice.exists():
+        raise SystemExit(f"Reference voice does not exist: {voice}")
+
+    output_dir = Path(args.output_dir) / args.model
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    engine = ChatterboxEngine(output_dir)
+    if engine.device != "cpu":
+        raise RuntimeError(f"CI smoke test expected CPU, got {engine.device_label}")
+
+    text = "Hello from the Chatterbox Creator Studio smoke test."
+    if args.model in {"turbo", "nano"}:
+        text = "Hello from the Chatterbox Creator Studio smoke test [chuckle]."
+
+    # One real model generation plus a Studio-owned trailing digital pause tests
+    # loading, voice conditioning, inference, saving, metadata and pause insertion
+    # without doubling the expensive model inference work.
+    result = engine.generate(
+        script=f"{text} [pause=0.20]",
+        voice_path=voice,
+        model_id=args.model,
+        language_id="en",
+        raw_mode=False,
+        smart_chunking=False,
+        speech_speed=1.0,
+        seed=12345,
+    )
+
+    if not result.audio_path.exists() or not result.metadata_path.exists():
+        raise RuntimeError("Generation did not produce both WAV and JSON metadata")
+
+    wav, sample_rate = torchaudio.load(result.audio_path)
+    if sample_rate <= 0 or wav.numel() <= sample_rate // 10:
+        raise RuntimeError("Generated WAV is unexpectedly empty or too short")
+    if not torch.isfinite(wav).all():
+        raise RuntimeError("Generated WAV contains NaN or infinite samples")
+
+    # The last 0.15 s is inside the explicit 0.20 s Studio pause and therefore
+    # should be mathematically silent; this verifies that the pause was handled
+    # outside the model and survived WAV serialization.
+    tail = wav[..., -int(sample_rate * 0.15) :]
+    if tail.numel() == 0 or float(tail.abs().max()) != 0.0:
+        raise RuntimeError("Exact trailing Studio pause was not preserved as digital silence")
+
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["model"]["id"] == args.model
+    assert metadata["seed"] == 12345
+    assert metadata["mode"] == "studio"
+    assert metadata["smart_chunking"] is False
+    assert metadata["chunk_count"] == 1
+    assert metadata["generated_chunks"] == [text]
+
+    # Raw mode is an engine/pipeline behavior. Exercise it with the smallest
+    # model in the real-model suite so we validate the path without making every
+    # matrix job perform a second expensive inference.
+    if args.model == "nano":
+        raw = engine.generate(
+            script="Raw mode smoke test.",
+            voice_path=voice,
+            model_id="nano",
+            language_id="en",
+            raw_mode=True,
+            smart_chunking=True,
+            seed=24680,
+        )
+        raw_metadata = json.loads(raw.metadata_path.read_text(encoding="utf-8"))
+        assert raw_metadata["mode"] == "raw"
+        assert raw_metadata["smart_chunking"] is False
+        assert raw_metadata["generated_chunks"] == ["Raw mode smoke test."]
+
+    engine.unload()
+    if engine.loaded:
+        raise RuntimeError("Model still reports loaded after explicit unload")
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "model": args.model,
+                "sample_rate": sample_rate,
+                "samples": int(wav.shape[-1]),
+                "wav": str(result.audio_path),
+                "metadata": str(result.metadata_path),
+            },
+            indent=2,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
