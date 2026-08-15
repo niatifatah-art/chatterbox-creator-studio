@@ -1,54 +1,38 @@
 from __future__ import annotations
 
-import re
+import json
+import random
+import secrets
 import threading
-from datetime import datetime
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
+from .models import (
+    DEFAULT_MODEL_ID,
+    MODEL_SPECS,
+    GenerationOptions,
+    create_adapter,
+)
 from .pauses import Pause, Speech, find_invalid_pause_markers, parse_script, pause_samples
+from .text import DEFAULT_MAX_CHARS, smart_chunks
 
-MAX_CHARS_PER_CHUNK = 280
-_CHUNK_GAP_SECONDS = 0.06
+DEFAULT_CHUNK_GAP_SECONDS = 0.06
 
 
-def _sentence_chunks(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> list[str]:
-    """Conservatively split long speech at sentence boundaries."""
-    text = " ".join((text or "").split())
-    if len(text) <= max_chars:
-        return [text] if text else []
+@dataclass(frozen=True)
+class GenerationResult:
+    audio_path: Path
+    metadata_path: Path
+    model_id: str
+    model_name: str
+    seed: int
+    chunk_count: int
 
-    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
-    if not sentences:
-        sentences = [text]
 
-    chunks: list[str] = []
-    current = ""
-    for sentence in sentences:
-        pieces = [sentence]
-        if len(sentence) > max_chars:
-            pieces = []
-            words = sentence.split()
-            part = ""
-            for word in words:
-                candidate = f"{part} {word}".strip()
-                if part and len(candidate) > max_chars:
-                    pieces.append(part)
-                    part = word
-                else:
-                    part = candidate
-            if part:
-                pieces.append(part)
-
-        for piece in pieces:
-            candidate = f"{current} {piece}".strip()
-            if current and len(candidate) > max_chars:
-                chunks.append(current)
-                current = piece
-            else:
-                current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
+def _sentence_chunks(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
+    """Backward-compatible wrapper for the original v0.1 helper."""
+    return smart_chunks(text, max_chars=max_chars)
 
 
 def detect_device() -> tuple[str, str]:
@@ -65,35 +49,64 @@ def detect_device() -> tuple[str, str]:
     return "cpu", "CPU"
 
 
+def _resolve_seed(seed: int | None) -> int:
+    if seed is None or int(seed) < 0:
+        return secrets.randbelow(2_147_483_647)
+    return int(seed)
+
+
+def _seed_everything(seed: int) -> None:
+    """Seed the RNGs used by Chatterbox and its common dependencies."""
+    random.seed(seed)
+
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except Exception:
+        # NumPy is present in normal Chatterbox installs, but keeping this
+        # optional makes the lightweight core easier to import/test.
+        pass
+
+    import torch
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
 class ChatterboxEngine:
     def __init__(self, output_dir: str | Path):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.device, self.device_label = detect_device()
-        self._model = None
-        self._voice_key: tuple[str, float] | None = None
+        self._adapter = None
+        self._model_id: str | None = None
         self._lock = threading.RLock()
 
     @property
     def loaded(self) -> bool:
-        return self._model is not None
+        return bool(self._adapter and self._adapter.loaded)
 
-    def load(self):
-        if self._model is None:
-            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+    @property
+    def loaded_model_id(self) -> str | None:
+        return self._model_id if self.loaded else None
 
-            self._model = ChatterboxMultilingualTTS.from_pretrained(
-                device=self.device,
-                t3_model="v3",
-            )
-        return self._model
+    def _adapter_for(self, model_id: str):
+        if model_id not in MODEL_SPECS:
+            raise ValueError(f"Unknown model '{model_id}'.")
+        if self._adapter is None or self._model_id != model_id:
+            self.unload()
+            self._adapter = create_adapter(model_id, self.device)
+            self._model_id = model_id
+        return self._adapter
 
-    def _prepare_voice(self, voice_path: Path, exaggeration: float) -> None:
-        model = self.load()
-        key = (str(voice_path.resolve()), round(float(exaggeration), 4))
-        if key != self._voice_key:
-            model.prepare_conditionals(str(voice_path), exaggeration=float(exaggeration))
-            self._voice_key = key
+    def unload(self) -> None:
+        if self._adapter is not None:
+            self._adapter.unload()
+        self._adapter = None
+        self._model_id = None
 
     @staticmethod
     def _time_stretch(wav, speed: float):
@@ -117,68 +130,158 @@ class ChatterboxEngine:
         self,
         script: str,
         voice_path: str | Path,
-        language_id: str,
-        exaggeration: float,
-        cfg_weight: float,
-        temperature: float,
-        repetition_penalty: float,
-        min_p: float,
-        top_p: float,
-        speech_speed: float,
-    ) -> Path:
+        model_id: str = DEFAULT_MODEL_ID,
+        language_id: str = "en",
+        exaggeration: float = 0.5,
+        cfg_weight: float = 0.5,
+        temperature: float = 0.8,
+        repetition_penalty: float = 1.2,
+        min_p: float = 0.05,
+        top_p: float = 1.0,
+        top_k: int = 1000,
+        speech_speed: float = 1.0,
+        raw_mode: bool = False,
+        smart_chunking: bool = True,
+        max_chars: int = DEFAULT_MAX_CHARS,
+        chunk_gap_seconds: float = DEFAULT_CHUNK_GAP_SECONDS,
+        seed: int | None = None,
+    ) -> GenerationResult:
         import torch
         import torchaudio as ta
 
-        invalid = find_invalid_pause_markers(script)
-        if invalid:
-            raise ValueError(
-                "Invalid pause syntax: " + ", ".join(invalid[:3]) + ". Use [pause=0.35] or [pause=250ms]."
-            )
-        segments = parse_script(script)
-        if not any(isinstance(segment, Speech) for segment in segments):
+        script = script or ""
+        if not script.strip():
             raise ValueError("Add some text to synthesize.")
+        if model_id not in MODEL_SPECS:
+            raise ValueError(f"Unknown model '{model_id}'.")
+        if not 0.0 <= float(chunk_gap_seconds) <= 3.0:
+            raise ValueError("Chunk gap must be between 0 and 3 seconds.")
+        if not 0.5 <= float(speech_speed) <= 2.0:
+            raise ValueError("Post speech speed must be between 0.5x and 2.0x.")
 
         voice = Path(voice_path)
         if not voice.exists():
             raise FileNotFoundError("The selected voice profile could not be found.")
 
+        spec = MODEL_SPECS[model_id]
+        if language_id not in spec.languages:
+            if spec.languages == ("en",):
+                language_id = "en"
+            else:
+                raise ValueError(f"{spec.name} does not support language '{language_id}'.")
+
+        actual_seed = _resolve_seed(seed)
+        options = GenerationOptions(
+            language_id=language_id,
+            exaggeration=float(exaggeration),
+            cfg_weight=float(cfg_weight),
+            temperature=float(temperature),
+            repetition_penalty=float(repetition_penalty),
+            min_p=float(min_p),
+            top_p=float(top_p),
+            top_k=int(top_k),
+        )
+
+        if raw_mode:
+            segments = [Speech(script.strip())]
+        else:
+            invalid = find_invalid_pause_markers(script)
+            if invalid:
+                raise ValueError(
+                    "Invalid pause syntax: "
+                    + ", ".join(invalid[:3])
+                    + ". Use [pause=0.35] or [pause=250ms]."
+                )
+            segments = parse_script(script)
+            if not any(isinstance(segment, Speech) for segment in segments):
+                raise ValueError("Add some text to synthesize.")
+
         with self._lock:
-            model = self.load()
-            self._prepare_voice(voice, float(exaggeration))
-            sample_rate = int(model.sr)
+            adapter = self._adapter_for(model_id)
+            _seed_everything(actual_seed)
             clips = []
+            generated_chunks: list[str] = []
+            sample_rate: int | None = None
 
             for segment in segments:
                 if isinstance(segment, Pause):
+                    if sample_rate is None:
+                        sample_rate = int(adapter.sample_rate)
                     clips.append(self._silence(segment.seconds, sample_rate))
                     continue
 
-                chunks = _sentence_chunks(segment.text)
+                if raw_mode or not smart_chunking:
+                    chunks = [segment.text]
+                else:
+                    chunks = smart_chunks(segment.text, max_chars=int(max_chars))
+
                 for index, chunk in enumerate(chunks):
-                    wav = model.generate(
-                        chunk,
-                        language_id=language_id,
-                        audio_prompt_path=None,
-                        exaggeration=float(exaggeration),
-                        cfg_weight=float(cfg_weight),
-                        temperature=float(temperature),
-                        repetition_penalty=float(repetition_penalty),
-                        min_p=float(min_p),
-                        top_p=float(top_p),
-                    )
+                    wav = adapter.generate(chunk, voice, options)
+                    if sample_rate is None:
+                        sample_rate = int(adapter.sample_rate)
                     wav = self._time_stretch(wav, float(speech_speed))
-                    clips.append(wav.to(dtype=torch.float32))
-                    if index < len(chunks) - 1:
-                        clips.append(self._silence(_CHUNK_GAP_SECONDS, sample_rate))
+                    clips.append(wav.to(dtype=torch.float32).cpu())
+                    generated_chunks.append(chunk)
+                    if (
+                        not raw_mode
+                        and smart_chunking
+                        and index < len(chunks) - 1
+                        and float(chunk_gap_seconds) > 0
+                    ):
+                        clips.append(self._silence(float(chunk_gap_seconds), sample_rate))
+
+            if not clips or sample_rate is None:
+                raise RuntimeError("Generation produced no audio clips.")
 
             final = torch.cat(clips, dim=-1)
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
-            output = self.output_dir / f"chatterbox_{timestamp}.wav"
+            safe_model = model_id.replace("/", "-")
+            output = self.output_dir / f"{safe_model}_{timestamp}.wav"
             ta.save(str(output), final, sample_rate)
-            return output
 
-    def recent_outputs(self, limit: int = 12) -> list[str]:
-        files = sorted(self.output_dir.glob("*.wav"), key=lambda path: path.stat().st_mtime, reverse=True)
+            metadata = {
+                "schema_version": 1,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "audio_file": output.name,
+                "model": {
+                    "id": model_id,
+                    "name": spec.name,
+                },
+                "device": self.device_label,
+                "voice_file": voice.name,
+                "language_id": language_id,
+                "seed": actual_seed,
+                "mode": "raw" if raw_mode else "studio",
+                "smart_chunking": bool(smart_chunking and not raw_mode),
+                "max_chars": int(max_chars),
+                "chunk_gap_seconds": float(chunk_gap_seconds),
+                "speech_speed": float(speech_speed),
+                "generation_options": asdict(options),
+                "original_script": script,
+                "generated_chunks": generated_chunks,
+                "chunk_count": len(generated_chunks),
+            }
+            metadata_path = output.with_suffix(".json")
+            metadata_path.write_text(
+                json.dumps(metadata, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            return GenerationResult(
+                audio_path=output,
+                metadata_path=metadata_path,
+                model_id=model_id,
+                model_name=spec.name,
+                seed=actual_seed,
+                chunk_count=len(generated_chunks),
+            )
+
+    def recent_outputs(self, limit: int = 20) -> list[str]:
+        files = sorted(
+            self.output_dir.glob("*.wav"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
         return [path.name for path in files[:limit]]
 
     def output_path(self, filename: str | None) -> Path | None:
@@ -187,3 +290,10 @@ class ChatterboxEngine:
         safe = Path(filename).name
         path = self.output_dir / safe
         return path if path.exists() else None
+
+    def metadata_path(self, filename: str | None) -> Path | None:
+        path = self.output_path(filename)
+        if path is None:
+            return None
+        metadata = path.with_suffix(".json")
+        return metadata if metadata.exists() else None

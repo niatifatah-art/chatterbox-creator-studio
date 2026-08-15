@@ -6,6 +6,7 @@ from typing import Any
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "voice": None,
+    "model_id": "multilingual-v3",
     "language": "en",
     "preset": "Creator",
     "exaggeration": 0.65,
@@ -14,7 +15,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "repetition_penalty": 1.20,
     "min_p": 0.05,
     "top_p": 1.00,
+    "top_k": 1000,
     "speech_speed": 1.00,
+    "raw_mode": False,
+    "smart_chunking": True,
+    "max_chars": 280,
+    "chunk_gap_seconds": 0.06,
+    "seed": -1,
 }
 
 
