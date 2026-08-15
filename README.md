@@ -15,7 +15,7 @@ I was trying to make voiceovers and kept bouncing between scripts, command lines
 
 - one reliable Chatterbox model;
 - one saved voice instead of finding the reference file every time;
-- `Aaaand`, `Buuut`, `Sooo` and normal creator-style writing without a complicated workflow;
+- creator-style writing without a complicated workflow;
 - pauses like **0.25 s or 1.375 s that are actually that long**;
 - a UI that is pleasant enough to leave open while making a video.
 
@@ -41,13 +41,7 @@ So this is that tool. Small first, useful first.
 Chatterbox's own punctuation preprocessing does not provide deterministic timing. Creator Studio therefore handles pauses **outside the model**.
 
 ```text
-Aaaand yes, it worked.
-[pause=0.35]
-
-Buuut, there is one small problem.
-[pause=800ms]
-
-Sooo, let's try again.
+I wanted a cleaner way to make voiceovers. [pause=0.35] So I built a small local studio around Chatterbox V3. [pause=800ms] It is still simple, but that is exactly what I wanted.
 ```
 
 Supported forms:
@@ -192,21 +186,25 @@ Presets are only starting points. You can open **Advanced settings** and change 
 | Preset | Intent |
 |---|---|
 | **Natural** | Upstream-like general starting point |
-| **Creator** | Slightly slower, more conversational creator delivery |
+| **Creator** | Conversational creator starting point with lower CFG/pacing |
 | **Stable** | More conservative sampling for difficult lines |
 | **Expressive** | Higher exaggeration with lower CFG |
 
 The `Creator` preset is a community preset, not an official Resemble AI preset. It intentionally starts with lower CFG/pacing and moderate exaggeration because upstream Chatterbox guidance notes that lower CFG can help fast reference speakers, while expressive speech often benefits from lower CFG plus higher exaggeration.
 
+All presets keep **Post speech speed at `1.00x` by default** so the model's waveform is not time-stretched after generation.
+
 ## Speech speed vs. pause speed
 
-The **Post speech speed** slider time-stretches only generated speech. Explicit pauses are inserted **after** speech post-processing, so:
+The optional **Post speech speed** slider time-stretches only generated speech. Explicit pauses are inserted **after** speech post-processing, so:
 
 ```text
 [pause=0.350]
 ```
 
-remains 350 ms even if speech is set to `0.94x`.
+remains 350 ms even if speech speed is changed.
+
+For the cleanest voice quality, keep **Post speech speed at `1.00x`**. Values above or below `1.00x` use waveform post-processing and can introduce metallic, phasey, or robotic artifacts on some voices. Prefer Chatterbox's CFG/pacing control and explicit pauses when possible.
 
 ---
 
@@ -265,8 +263,14 @@ Hugging Face can warn that Windows symlinks are unavailable unless Developer Mod
 Try the **Creator** preset first. Then adjust:
 
 - lower **CFG / pacing** toward `0.30`;
-- reduce **Post speech speed** (for example `0.94x` or `0.90x`);
-- use explicit `[pause=…]` markers rather than hoping punctuation produces a specific duration.
+- use explicit `[pause=…]` markers rather than hoping punctuation produces a specific duration;
+- keep **Post speech speed at `1.00x`** for cleanest quality unless you deliberately accept post-processing artifacts.
+
+## Output sounds metallic or robotic
+
+First check **Post speech speed**. Set it to exactly `1.00x` and regenerate the same text before changing anything else. Time-stretching generated speech can introduce metallic or phasey artifacts even when the underlying Chatterbox output is clean.
+
+If the artifact remains at `1.00x`, try a clean unprocessed reference clip and then adjust exaggeration / CFG conservatively.
 
 ## A long line becomes unstable
 
