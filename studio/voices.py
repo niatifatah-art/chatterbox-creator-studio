@@ -32,7 +32,9 @@ class VoiceLibrary:
 
     @staticmethod
     def _slug(name: str) -> str:
-        clean = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "voice").strip()).strip("-._")
+        # Keep Unicode letters/digits (Arabic, CJK, etc.) while removing path
+        # separators and unsafe punctuation from local filenames.
+        clean = re.sub(r"[^\w.-]+", "-", (name or "voice").strip(), flags=re.UNICODE).strip("-._")
         return clean or "voice"
 
     def list(self) -> list[str]:
@@ -108,9 +110,10 @@ class VoiceLibrary:
     def _write_metadata(self, profile: VoiceProfile) -> None:
         payload = asdict(profile)
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-        self.metadata_path(profile.name).write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        destination = self.metadata_path(profile.name)
+        tmp = destination.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(destination)
 
     def profile(self, name: str | None) -> VoiceProfile | None:
         path = self.path_for(name)
