@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -27,16 +27,6 @@ class VerificationReport:
     warning: str | None = None
 
 
-def _longest_tail_below(signal, threshold: float) -> int:
-    count = 0
-    for value in reversed(signal):
-        if abs(float(value)) <= threshold:
-            count += 1
-        else:
-            break
-    return count
-
-
 def analyze_audio(
     audio_path: str | Path,
     silence_threshold: float = 0.004,
@@ -49,20 +39,25 @@ def analyze_audio(
     import torchaudio as ta
 
     wav, sample_rate = ta.load(str(audio_path))
-    if wav.ndim == 2:
-        mono = wav.mean(dim=0)
-    else:
-        mono = wav.reshape(-1)
+    mono = wav.mean(dim=0) if wav.ndim == 2 else wav.reshape(-1)
     total = int(mono.numel())
     duration = total / float(sample_rate) if sample_rate else 0.0
     if total == 0:
         return QualityReport(False, 0.0, 0.0, 1.0, 0.0, 0.0, ("Empty audio file.",))
 
     absolute = mono.abs()
-    silence_ratio = float((absolute <= silence_threshold).float().mean().item())
+    silence_mask = absolute <= silence_threshold
+    silence_ratio = float(silence_mask.float().mean().item())
     clipping_ratio = float((absolute >= 0.995).float().mean().item())
-    tail_samples = _longest_tail_below(mono.tolist(), silence_threshold)
-    tail_silence = tail_samples / float(sample_rate)
+
+    # Count the contiguous silent run at the very end without converting a potentially
+    # long tensor into a Python list.
+    non_silent = torch.nonzero(~silence_mask, as_tuple=False).flatten()
+    if non_silent.numel() == 0:
+        tail_samples = total
+    else:
+        tail_samples = total - int(non_silent[-1].item()) - 1
+    tail_silence = tail_samples / float(sample_rate) if sample_rate else 0.0
 
     warnings: list[str] = []
     if duration < min_duration_seconds:
@@ -111,6 +106,17 @@ def text_similarity(source: str, transcript: str) -> float:
     return float(SequenceMatcher(None, left, right).ratio())
 
 
+@lru_cache(maxsize=3)
+def _load_whisper_model(model_size: str):
+    from faster_whisper import WhisperModel
+
+    return WhisperModel(model_size, device="cpu", compute_type="int8")
+
+
+def clear_whisper_cache() -> None:
+    _load_whisper_model.cache_clear()
+
+
 def verify_with_faster_whisper(
     audio_path: str | Path,
     source_text: str,
@@ -118,9 +124,9 @@ def verify_with_faster_whisper(
     model_size: str = "tiny",
     threshold: float = 0.78,
 ) -> VerificationReport:
-    """Optional local verification. No dependency is installed unless the user opts in."""
+    """Optional local verification. The verifier is cached after its first load."""
     try:
-        from faster_whisper import WhisperModel
+        import faster_whisper  # noqa: F401
     except Exception:
         return VerificationReport(
             available=False,
@@ -131,10 +137,10 @@ def verify_with_faster_whisper(
         )
 
     try:
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        model = _load_whisper_model(str(model_size))
         segments, _ = model.transcribe(
             str(audio_path),
-            language=language_id if language_id and language_id not in {"zh", "ja"} else None,
+            language=language_id or None,
             vad_filter=True,
         )
         transcript = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
