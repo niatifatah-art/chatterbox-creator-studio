@@ -8,6 +8,7 @@ import torch
 import torchaudio
 
 from studio.engine import ChatterboxEngine
+from studio.model_manager import LocalModelManager
 from studio.models import MODEL_SPECS
 from studio.quality import analyze_audio
 
@@ -26,17 +27,27 @@ def main() -> None:
     output_dir = Path(args.output_dir) / args.model
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Use the same managed-model path as the product UI. This is intentionally
+    # part of the real smoke: it validates official model download, exact local
+    # snapshot selection, and upstream from_local loading instead of only testing
+    # the legacy from_pretrained fallback.
+    manager = LocalModelManager(output_dir / "model_state.json")
+    managed = manager.download(args.model)
+    if not managed.installed or not managed.snapshot_path or not managed.revision:
+        raise RuntimeError("Managed model download did not produce a pinned local snapshot")
+
     engine = ChatterboxEngine(output_dir)
     if engine.device != "cpu":
         raise RuntimeError(f"CI smoke test expected CPU, got {engine.device_label}")
+    engine.set_model_path(args.model, managed.snapshot_path)
 
-    text = "Hello from the Chatterbox Creator Studio smoke test."
+    text = "Hello from the Creator Studio smoke test."
     if args.model in {"turbo", "nano"}:
-        text = "Hello from the Chatterbox Creator Studio smoke test [chuckle]."
+        text = "Hello from the Creator Studio smoke test [chuckle]."
 
     # One real model generation plus a Studio-owned trailing digital pause tests
-    # loading, voice conditioning, inference, saving, metadata and pause insertion
-    # without doubling the expensive model inference work.
+    # managed loading, voice conditioning, inference, saving, metadata and pause
+    # insertion without doubling the expensive model inference work.
     result = engine.generate(
         script=f"{text} [pause=0.20]",
         voice_path=voice,
@@ -72,11 +83,19 @@ def main() -> None:
 
     metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
     assert metadata["model"]["id"] == args.model
+    assert metadata["model"]["local_snapshot"] == str(Path(managed.snapshot_path).resolve())
     assert metadata["seed"] == 12345
     assert metadata["mode"] == "studio"
     assert metadata["smart_chunking"] is False
     assert metadata["chunk_count"] == 1
     assert metadata["generated_chunks"] == [text]
+
+    # The selected version must stay pinned even if Hub refs move later. The
+    # model-manager unit suite simulates a moving refs/main; here we verify the
+    # real state file records the exact snapshot that actually generated audio.
+    state = json.loads((output_dir / "model_state.json").read_text(encoding="utf-8"))
+    assert state["models"][args.model]["revision"] == managed.revision
+    assert Path(state["models"][args.model]["snapshot_path"]).resolve() == Path(managed.snapshot_path).resolve()
 
     # Raw mode is an engine/pipeline behavior. Exercise it with the smallest
     # model in the real-model suite so we validate the path without making every
@@ -105,6 +124,8 @@ def main() -> None:
             {
                 "ok": True,
                 "model": args.model,
+                "managed_revision": managed.revision,
+                "managed_snapshot": managed.snapshot_path,
                 "sample_rate": sample_rate,
                 "samples": int(wav.shape[-1]),
                 "quality_score": quality.score,
