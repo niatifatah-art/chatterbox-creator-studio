@@ -1,4 +1,115 @@
-/* v1.1.1 interaction layer: make state obvious without making the interface loud. */
+/* v1.1.1 product layer: calm, consistent state and color in every browser.
+   Gradio's default light palette otherwise leaks white controls into our dark shell.
+   These are documented Gradio theme variables, kept here while the UI remains Gradio. */
+
+:root {
+  --body-background-fill: #0b0c0f;
+  --body-background-fill-dark: #0b0c0f;
+  --body-text-color: #f5f6f8;
+  --body-text-color-dark: #f5f6f8;
+  --body-text-color-subdued: #9ea5b2;
+  --body-text-color-subdued-dark: #9ea5b2;
+
+  --background-fill-primary: #111318;
+  --background-fill-primary-dark: #111318;
+  --background-fill-secondary: #151820;
+  --background-fill-secondary-dark: #151820;
+  --border-color-primary: #282c35;
+  --border-color-primary-dark: #282c35;
+  --border-color-accent: #7c8cff;
+  --border-color-accent-dark: #7c8cff;
+  --color-accent: #7c8cff;
+  --color-accent-soft: rgba(124, 140, 255, .14);
+  --color-accent-soft-dark: rgba(124, 140, 255, .14);
+
+  --block-background-fill: #111318;
+  --block-background-fill-dark: #111318;
+  --block-border-color: #282c35;
+  --block-border-color-dark: #282c35;
+  --block-label-background-fill: #111318;
+  --block-label-background-fill-dark: #111318;
+  --block-label-border-color: #282c35;
+  --block-label-border-color-dark: #282c35;
+  --block-label-text-color: #aeb4bf;
+  --block-label-text-color-dark: #aeb4bf;
+  --block-info-text-color: #858d9b;
+  --block-info-text-color-dark: #858d9b;
+  --accordion-text-color: #f5f6f8;
+  --accordion-text-color-dark: #f5f6f8;
+
+  --input-background-fill: #151820;
+  --input-background-fill-dark: #151820;
+  --input-background-fill-focus: #191c24;
+  --input-background-fill-focus-dark: #191c24;
+  --input-background-fill-hover: #181b22;
+  --input-background-fill-hover-dark: #181b22;
+  --input-border-color: #303540;
+  --input-border-color-dark: #303540;
+  --input-border-color-focus: #7c8cff;
+  --input-border-color-focus-dark: #7c8cff;
+  --input-border-color-hover: #3a404d;
+  --input-border-color-hover-dark: #3a404d;
+  --input-border-width: 1px;
+  --input-border-width-dark: 1px;
+  --input-placeholder-color: #69717f;
+  --input-placeholder-color-dark: #69717f;
+
+  --checkbox-background-color: #151820;
+  --checkbox-background-color-dark: #151820;
+  --checkbox-background-color-selected: #7c8cff;
+  --checkbox-background-color-selected-dark: #7c8cff;
+  --checkbox-border-color: #414754;
+  --checkbox-border-color-dark: #414754;
+  --checkbox-border-color-selected: #8f9cff;
+  --checkbox-border-color-selected-dark: #8f9cff;
+  --checkbox-label-background-fill: #151820;
+  --checkbox-label-background-fill-dark: #151820;
+  --checkbox-label-background-fill-hover: #1b1f28;
+  --checkbox-label-background-fill-hover-dark: #1b1f28;
+  --checkbox-label-border-color: #303540;
+  --checkbox-label-border-color-dark: #303540;
+  --checkbox-label-text-color: #e8eaf0;
+  --checkbox-label-text-color-dark: #e8eaf0;
+
+  --button-primary-background-fill: #7182f5;
+  --button-primary-background-fill-dark: #7182f5;
+  --button-primary-background-fill-hover: #7f8efa;
+  --button-primary-background-fill-hover-dark: #7f8efa;
+  --button-primary-border-color: #7182f5;
+  --button-primary-border-color-dark: #7182f5;
+  --button-primary-text-color: #ffffff;
+  --button-primary-text-color-dark: #ffffff;
+
+  --button-secondary-background-fill: #20232c;
+  --button-secondary-background-fill-dark: #20232c;
+  --button-secondary-background-fill-hover: #292d38;
+  --button-secondary-background-fill-hover-dark: #292d38;
+  --button-secondary-border-color: #303540;
+  --button-secondary-border-color-dark: #303540;
+  --button-secondary-border-color-hover: #414754;
+  --button-secondary-border-color-hover-dark: #414754;
+  --button-secondary-text-color: #eef0f4;
+  --button-secondary-text-color-dark: #eef0f4;
+  --button-secondary-text-color-hover: #ffffff;
+  --button-secondary-text-color-hover-dark: #ffffff;
+
+  --panel-background-fill: #111318;
+  --panel-background-fill-dark: #111318;
+  --panel-border-color: #282c35;
+  --panel-border-color-dark: #282c35;
+  --table-text-color: #eef0f4;
+  --table-text-color-dark: #eef0f4;
+  --table-border-color: #303540;
+  --table-border-color-dark: #303540;
+  --table-even-background-fill: #111318;
+  --table-even-background-fill-dark: #111318;
+  --table-odd-background-fill: #151820;
+  --table-odd-background-fill-dark: #151820;
+  --loader-color: #7c8cff;
+  --loader-color-dark: #7c8cff;
+  --slider-color: #7c8cff;
+  --slider-color-dark: #7c8cff;
+}
 
 .primary-actions {
   align-items: stretch !important;
@@ -37,6 +148,7 @@
   border: 1px solid var(--app-border) !important;
   border-radius: 11px !important;
   background: rgba(255, 255, 255, .025) !important;
+  color: var(--app-text) !important;
   padding: .55rem .72rem !important;
   transition: background .14s ease, border-color .14s ease, transform .14s ease !important;
 }
@@ -95,6 +207,22 @@
 #stt-quality label {
   min-width: 6.3rem;
   justify-content: center;
+}
+
+/* Media/upload surfaces should look like part of the product, not white embeds. */
+.gradio-container audio,
+.gradio-container [data-testid="waveform"],
+.gradio-container .upload-container,
+.gradio-container .file-preview {
+  background: #151820 !important;
+  color: #e8eaf0 !important;
+}
+
+/* Gradio's framework footer is useful for demos but noisy in a desktop product.
+   Our own minimal footer and About section keep the relevant local/credits info. */
+.gradio-container > footer,
+.gradio-container footer {
+  display: none !important;
 }
 
 /* Keep disabled actions legible so users understand that a choice is unavailable. */
