@@ -12,13 +12,14 @@ The app follows one rule: **the common path stays simple, while technical contro
 - Use **Auto** for sensible model, language, and compute choices.
 - Hide irrelevant controls automatically: explicit English-only models do not show a redundant language selector.
 - **Compare only the installed models you select.** Results arrive model-by-model and the comparison can be stopped.
+- Stop a long normal generation from the Create screen instead of waiting for a CPU run you no longer want.
 - Approve a missing model with **Download & generate** instead of getting a surprise multi-gigabyte download.
 - Browse a friendly **Models library** with search, Installed/Available filters, and card-level Download / Use / Update / Remove actions.
 - Use model-specific recommended tuning: Multilingual, Expressive, and Light do not pretend that one technical recipe is ideal for every engine.
 - Add exact digital pauses such as `[pause=0.5]` at the current text caret; supported expression tags are shown only for models that use them.
-- **Save a sound you like** as a local recipe containing the voice, model, style, tuning, seed, speed, and finishing choices, then reuse it later.
+- **Save a sound you like** as a local recipe containing the voice, model, style, exact tuning, actual seed, speed, and finishing choices, then restore that recipe without recommended defaults silently overwriting it.
 - Keep **projects, takes, voices, saved sound recipes, and generation history** locally.
-- Use **Batch & subtitles** with TXT, Markdown, CSV, JSON, SRT, and VTT.
+- Use **Batch & subtitles** with TXT, Markdown, CSV, JSON, SRT, and VTT; batch generation resolves the selected model's own recommended profile rather than inheriting unrelated tuning from Create.
 - Use **Transcribe** for local speech-to-text; optional speech tools can be installed from the Transcribe screen itself.
 - Keep an installed model snapshot pinned until **you explicitly choose to update it**.
 - Let **Performance: Auto** use CUDA, Apple MPS, or CPU when that backend is actually available to the installed runtime.
@@ -92,7 +93,7 @@ The current installer metadata is **1.1.1-preview**. The GitHub Actions workflow
 2. Choose a saved voice, or press **+ Add a voice** and upload/record one.
 3. Leave **Model = Auto** and **Language = Auto** unless you want an override.
 4. Write the script.
-5. Press **Generate**.
+5. Press **Generate**. A Stop action appears while generation is active.
 6. If the needed model is missing, review the model and approximate download size, then choose **Download & generate** or **Cancel**.
 7. Open **Compare voices** only when you want comparison, select the installed models you actually want to hear, and press **Compare**.
 8. When a result is exactly what you wanted, press **♡ Save sound** and give the recipe a human name.
@@ -111,6 +112,8 @@ python -m pip install -r requirements-optional.txt
 
 ## Local files
 
+Source/development runs preserve the existing repository-local layout:
+
 ```text
 data/
 ├── model_state.json   # exact model snapshots selected by the app
@@ -122,6 +125,16 @@ data/
 outputs/
 └── ...
 ```
+
+Frozen desktop builds deliberately keep creator-owned data **outside the installed application bundle**. On Windows the default writable root is:
+
+```text
+%LOCALAPPDATA%\CreatorStudio\
+├── data\
+└── outputs\
+```
+
+That separation prevents a normal application update or uninstall from treating voices, projects, recipes, settings, and generated audio as bundled program files. Advanced/portable setups can override the writable root with `CREATOR_STUDIO_STORAGE_ROOT`.
 
 Deleting a speech model from Models does **not** delete voices, projects, or saved sound recipes.
 
@@ -159,7 +172,7 @@ pytest -q
 CI also runs:
 
 - Ubuntu and Windows core tests.
-- Model-specific profile and saved-recipe tests.
+- Model-specific profile, language-routing, writable-path, and saved-recipe tests.
 - A Windows product UI import/start/HTTP smoke.
 - Chromium end-to-end checks for adaptive language controls, explicit download confirmation, caret pause insertion, Compare selection, the model library, and Transcribe setup.
 - Real CPU generation smokes for Multilingual, Expressive, and Light.
