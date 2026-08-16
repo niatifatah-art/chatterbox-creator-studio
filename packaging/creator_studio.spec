@@ -13,11 +13,11 @@ datas = [
 binaries = []
 hiddenimports = []
 
-# safehttpx reads version.txt during import. Static module discovery does not include
-# that package data automatically, so mirror the package layout in the frozen bundle.
-# PyInstaller's documented collect_data_files helper is intentionally used instead of
-# hard-coding a site-packages path.
-datas += collect_data_files("safehttpx")
+# A few lightweight Gradio dependencies read package-local version.txt files during
+# import. Static module discovery sees the Python code but not those text resources,
+# so preserve their package data explicitly in the frozen bundle.
+for package in ("safehttpx", "groovy"):
+    datas += collect_data_files(package)
 
 # These libraries carry templates, frontend assets, dynamic modules, native binaries,
 # or runtime model code that static analysis cannot always see. Model weights are
