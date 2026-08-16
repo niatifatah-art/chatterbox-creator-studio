@@ -12,7 +12,6 @@ on:
   push:
     branches:
       - main
-      - dev/v1.1-product-experience
     paths:
       - "studio/**"
       - "requirements.txt"
