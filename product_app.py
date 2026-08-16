@@ -4,12 +4,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import gradio as gr
 
-# Keep the proven generation/storage/model controller intact while the product shell
-# evolves independently. This module is the supported product UI entry point.
+# The stable generation/storage/model controller remains in app.py for now. This file
+# is the supported product surface and deliberately keeps model/provider details out
+# of the normal creator workflow.
 import app as core
 from studio.model_profiles import capabilities_for, language_control_needed, profile_for
 from studio.recipes import RecipeStore
@@ -35,18 +36,34 @@ def _installed(model_id: str) -> bool:
         return False
 
 
-def _actual_model(model_ui: str, language_ui: str, script: str, compute_preference: str) -> str:
-    model_id, _, _, _ = core._resolve_choice(model_ui, language_ui, script or "", compute_preference)
-    return model_id
-
-
 def _model_ui_for_id(model_id: str) -> str:
     return MODEL_NAMES.get(model_id, MODEL_NAMES["multilingual-v3"])
 
 
+def _resolved_model(model_ui: str, language_ui: str, script: str, compute_preference: str) -> tuple[str, str]:
+    model_id, language_name, _, _ = core._resolve_choice(model_ui, language_ui, script or "", compute_preference)
+    return model_id, language_name
+
+
+def _effective_language(model_ui: str, language_ui: str) -> str:
+    explicit = core.model_id_from_ui_name(model_ui)
+    return language_ui if language_control_needed(explicit) else "English"
+
+
+def _friendly_download_callback(progress: gr.Progress, model_id: str):
+    label = MODEL_NAMES[model_id]
+
+    def callback(current: int, total: int | None, _upstream_desc: str) -> None:
+        if total and total > 0:
+            core._gr_progress(progress, f"Downloading {label}", current, total, unit="file")
+        else:
+            core._gr_progress(progress, f"Preparing {label}…", None, None, unit="file")
+
+    return callback
+
+
 def _model_card_text(model_id: str) -> str:
     status = core.model_manager.status(model_id)
-    name = MODEL_NAMES[model_id]
     if status.installed:
         size = f"{status.size_gb:.2f} GB" if status.size_gb else "installed"
         state = f"<span class='state-ready'>● Installed</span> · {size}"
@@ -56,7 +73,7 @@ def _model_card_text(model_id: str) -> str:
         state = f"<span class='state-missing'>○ Not installed</span> · {size}"
     loaded = " · <b>In memory</b>" if core.engine.loaded_model_id == model_id else ""
     return (
-        f"<div class='model-card-copy'><div class='model-card-title'>{name}</div>"
+        f"<div class='model-card-copy'><div class='model-card-title'>{MODEL_NAMES[model_id]}</div>"
         f"<div class='model-card-desc'>{MODEL_SHORT[model_id]}</div>"
         f"<div class='model-card-state'>{state}{loaded}</div></div>"
     )
@@ -87,28 +104,24 @@ def filter_model_cards(query: str, availability: str):
         installed = _installed(model_id)
         searchable = f"{MODEL_NAMES[model_id]} {MODEL_SHORT[model_id]} {model_id}".lower()
         text_match = not needle or needle in searchable
-        filter_match = availability == "All" or (availability == "Installed" and installed) or (availability == "Available" and not installed)
+        filter_match = (
+            availability == "All"
+            or (availability == "Installed" and installed)
+            or (availability == "Available" and not installed)
+        )
         updates.append(gr.update(visible=text_match and filter_match))
     return tuple(updates)
-
-
-def _friendly_download_callback(progress: gr.Progress, model_id: str):
-    label = MODEL_NAMES[model_id]
-
-    def callback(current: int, total: int | None, _upstream_desc: str) -> None:
-        if total and total > 0:
-            core._gr_progress(progress, f"Downloading {label}", current, total, unit="file")
-        else:
-            core._gr_progress(progress, f"Preparing {label}…", None, None, unit="file")
-
-    return callback
 
 
 def install_model_by_id(model_id: str, offline_mode: bool, progress=gr.Progress()):
     if offline_mode:
         raise gr.Error("Turn off Offline mode before downloading a model.")
     try:
-        status = core.model_manager.download(model_id, offline=False, progress=_friendly_download_callback(progress, model_id))
+        status = core.model_manager.download(
+            model_id,
+            offline=False,
+            progress=_friendly_download_callback(progress, model_id),
+        )
         progress(None)
         return f"✅ **{MODEL_NAMES[model_id]}** is ready · {status.size_gb:.2f} GB."
     except Exception as exc:
@@ -119,6 +132,7 @@ def install_model_by_id(model_id: str, offline_mode: bool, progress=gr.Progress(
 def use_model_by_id(model_id: str, compute_preference: str, offline_mode: bool, progress=gr.Progress()):
     try:
         core._configure_engine(model_id, compute_preference, offline_mode, False, progress)
+        core.engine.load_model(model_id, progress_callback=core._engine_progress(progress))
         progress(None)
         return f"✅ **{MODEL_NAMES[model_id]}** is loaded and ready."
     except Exception as exc:
@@ -128,9 +142,13 @@ def use_model_by_id(model_id: str, compute_preference: str, offline_mode: bool, 
 
 def update_model_by_id(model_id: str, offline_mode: bool, progress=gr.Progress()):
     if offline_mode:
-        raise gr.Error("Turn off Offline mode before checking or downloading an update.")
+        raise gr.Error("Turn off Offline mode before updating a model.")
     try:
-        status = core.model_manager.update(model_id, offline=False, progress=_friendly_download_callback(progress, model_id))
+        status = core.model_manager.update(
+            model_id,
+            offline=False,
+            progress=_friendly_download_callback(progress, model_id),
+        )
         if core.engine.loaded_model_id == model_id:
             core.engine.unload()
         progress(None)
@@ -143,28 +161,47 @@ def update_model_by_id(model_id: str, offline_mode: bool, progress=gr.Progress()
 def remove_model_by_id(model_id: str):
     if core.engine.loaded_model_id == model_id:
         core.engine.unload()
-    ui_name = _model_ui_for_id(model_id)
-    _, note = core.remove_model_ui(ui_name)
+    _, note = core.remove_model_ui(_model_ui_for_id(model_id))
     return note
+
+
+def _model_install_action(model_id: str) -> Callable:
+    def action(offline_mode: bool, progress=gr.Progress()):
+        return install_model_by_id(model_id, offline_mode, progress)
+    return action
+
+
+def _model_use_action(model_id: str) -> Callable:
+    def action(compute_preference: str, offline_mode: bool, progress=gr.Progress()):
+        return use_model_by_id(model_id, compute_preference, offline_mode, progress)
+    return action
+
+
+def _model_update_action(model_id: str) -> Callable:
+    def action(offline_mode: bool, progress=gr.Progress()):
+        return update_model_by_id(model_id, offline_mode, progress)
+    return action
+
+
+def _model_remove_action(model_id: str) -> Callable:
+    def action():
+        return remove_model_by_id(model_id)
+    return action
 
 
 def _compare_data(language_ui: str, script: str, current: list[str] | None = None):
     compatible = tuple(core.safe_compare_order(core.compatible_models(language_ui, script or "")))
     choices: list[tuple[str, str]] = []
-    installed_ids = []
+    installed_ids: list[str] = []
     for model_id in compatible:
         ready = _installed(model_id)
         if ready:
             installed_ids.append(model_id)
         estimate = MODEL_ESTIMATES_GB.get(model_id)
-        state = "Ready" if ready else f"Install first · ≈{estimate:.1f} GB" if estimate else "Install first"
+        state = "Ready" if ready else (f"Install first · ≈{estimate:.1f} GB" if estimate else "Install first")
         choices.append((f"{MODEL_NAMES[model_id]} · {state}", model_id))
 
-    if current is None:
-        selected = installed_ids.copy()
-    else:
-        selected = [model_id for model_id in current if model_id in compatible]
-
+    selected = installed_ids.copy() if current is None else [mid for mid in current if mid in compatible]
     language = core.resolve_language(language_ui, script or "")
     if len(compatible) < 2:
         note = f"**{language}** currently has one compatible model, so there is nothing useful to compare."
@@ -195,7 +232,7 @@ def compare_selection_note(selected, language_ui, script):
 
 def _resolve_profile(model_ui: str, language_ui: str, script: str, compute_preference: str, style: str):
     try:
-        model_id = _actual_model(model_ui, language_ui, script, compute_preference)
+        model_id, _ = _resolved_model(model_ui, language_ui, script, compute_preference)
     except Exception:
         model_id = core.model_id_from_ui_name(model_ui) or "multilingual-v3"
     return model_id, profile_for(model_id, style)
@@ -206,9 +243,9 @@ def update_sound_controls(model_ui, language_ui, script, compute_preference, sty
     caps = capabilities_for(model_id)
     explicit_id = core.model_id_from_ui_name(model_ui)
     show_language = language_control_needed(explicit_id)
-    language_update = gr.update(visible=show_language, value=language_ui if show_language else "English")
+    effective_language = language_ui if show_language else "English"
     return (
-        language_update,
+        gr.update(visible=show_language, value=effective_language),
         gr.update(value=profile.exaggeration),
         gr.update(value=profile.cfg_weight),
         gr.update(value=profile.temperature),
@@ -220,7 +257,7 @@ def update_sound_controls(model_ui, language_ui, script, compute_preference, sty
         gr.update(visible=caps.exaggeration or caps.cfg_weight or caps.min_p),
         gr.update(visible=caps.top_k),
         gr.update(visible=caps.expressive_tags),
-        core._model_state_line(model_ui, language_update.get("value", language_ui), script, compute_preference),
+        core._model_state_line(model_ui, effective_language, script, compute_preference),
     )
 
 
@@ -228,87 +265,6 @@ def update_batch_language(model_ui: str, current_language: str):
     model_id = core.model_id_from_ui_name(model_ui)
     show = language_control_needed(model_id)
     return gr.update(visible=show, value=current_language if show else "English")
-
-
-def _recipe_payload(
-    *,
-    audio_path: str | None,
-    metadata_path: str | None,
-    model_id: str,
-    voice_name: str | None,
-    language_name: str,
-    style: str,
-    speech_speed: float,
-    generation: dict[str, Any],
-    finishing: dict[str, Any],
-) -> dict[str, Any] | None:
-    if not audio_path:
-        return None
-    actual_seed = int(generation.get("seed", -1))
-    if metadata_path:
-        try:
-            payload = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
-            actual_seed = int(payload.get("seed", actual_seed))
-        except Exception:
-            pass
-    return {
-        "audio_path": str(audio_path),
-        "voice": voice_name,
-        "model_id": model_id,
-        "language": language_name,
-        "style": style,
-        "speech_speed": float(speech_speed),
-        "seed": actual_seed,
-        "generation": generation,
-        "finishing": finishing,
-    }
-
-
-def save_recipe(recipe_state: dict | None, name: str | None):
-    if not recipe_state:
-        return "Generate a sound first.", gr.update()
-    recipe = RECIPES.save(
-        name=(name or "Favorite sound"),
-        voice=recipe_state.get("voice"),
-        model_id=recipe_state["model_id"],
-        language=recipe_state["language"],
-        style=recipe_state["style"],
-        speech_speed=recipe_state["speech_speed"],
-        seed=recipe_state["seed"],
-        generation=recipe_state.get("generation") or {},
-        finishing=recipe_state.get("finishing") or {},
-    )
-    choices = [(item.name, item.id) for item in RECIPES.list()]
-    return f"♡ Saved **{recipe.name}**.", gr.update(choices=choices, value=recipe.id)
-
-
-def delete_recipe(recipe_id: str | None):
-    if not recipe_id or not RECIPES.delete(recipe_id):
-        return gr.update(), "Choose a saved sound first."
-    choices = [(item.name, item.id) for item in RECIPES.list()]
-    return gr.update(choices=choices, value=choices[0][1] if choices else None), "Saved sound deleted."
-
-
-def apply_recipe(recipe_id: str | None):
-    recipe = RECIPES.get(recipe_id)
-    if recipe is None:
-        return (gr.update(),) * 12 + ("Choose a saved sound first.",)
-    generation = recipe.generation or {}
-    return (
-        gr.update(value=recipe.voice),
-        gr.update(value=_model_ui_for_id(recipe.model_id)),
-        gr.update(value=recipe.language),
-        gr.update(value=recipe.style),
-        gr.update(value=recipe.speech_speed),
-        gr.update(value=float(generation.get("exaggeration", 0.5))),
-        gr.update(value=float(generation.get("cfg_weight", 0.5))),
-        gr.update(value=float(generation.get("temperature", 0.8))),
-        gr.update(value=float(generation.get("repetition_penalty", 1.2))),
-        gr.update(value=float(generation.get("min_p", 0.05))),
-        gr.update(value=float(generation.get("top_p", 1.0))),
-        gr.update(value=int(generation.get("top_k", 1000))),
-        f"✅ Loaded **{recipe.name}**. You can still change anything before generating.",
-    )
 
 
 def _effective_tuning(
@@ -336,156 +292,178 @@ def _effective_tuning(
             profile.top_k,
             profile.speech_speed,
         )
-    return exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, int(top_k), speech_speed
+    return (
+        float(exaggeration), float(cfg_weight), float(temperature), float(repetition_penalty),
+        float(min_p), float(top_p), int(top_k), float(speech_speed),
+    )
 
 
-def _generation_call(
-    script,
-    project_id,
-    voice_name,
-    model_ui,
-    language_ui,
-    style,
-    speech_speed,
-    compute_preference,
-    quality_mode,
-    offline_mode,
-    recommended_tuning,
-    exaggeration,
-    cfg_weight,
-    temperature,
-    repetition_penalty,
-    min_p,
-    top_p,
-    top_k,
-    raw_mode,
-    smart_chunking,
-    max_chars,
-    chunk_gap_seconds,
-    seed,
-    normalize_unicode,
-    normalize_punctuation,
-    normalize_numbers,
-    replace_urls,
-    collapse_punctuation,
-    normalize_whitespace,
-    quality_check,
-    verify_stt,
-    whisper_model,
-    verification_threshold,
-    auto_retries,
-    best_of_n,
-    trim_silence,
-    peak_normalize,
-    fade_ms,
-    *,
-    allow_download: bool,
-    progress: gr.Progress,
+def _recipe_payload(
+    audio_path: str | None,
+    metadata_path: str | None,
+    voice_name: str | None,
+    model_id: str,
+    language_name: str,
+    style: str,
+    speech_speed: float,
+    generation: dict[str, Any],
+    finishing: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not audio_path:
+        return None
+    actual_seed = int(generation.get("seed", -1))
+    if metadata_path:
+        try:
+            metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+            actual_seed = int(metadata.get("seed", actual_seed))
+        except Exception:
+            pass
+    return {
+        "audio_path": str(audio_path),
+        "voice": voice_name,
+        "model_id": model_id,
+        "language": language_name,
+        "style": style,
+        "speech_speed": float(speech_speed),
+        "seed": actual_seed,
+        "generation": dict(generation),
+        "finishing": dict(finishing),
+    }
+
+
+def _recipe_choices():
+    return [(item.name, item.id) for item in RECIPES.list()]
+
+
+def save_recipe(recipe_state: dict | None, name: str | None):
+    if not recipe_state:
+        return "Generate a sound first.", gr.update()
+    recipe = RECIPES.save(
+        name=(name or "Favorite sound"),
+        voice=recipe_state.get("voice"),
+        model_id=recipe_state["model_id"],
+        language=recipe_state["language"],
+        style=recipe_state["style"],
+        speech_speed=recipe_state["speech_speed"],
+        seed=recipe_state["seed"],
+        generation=recipe_state.get("generation") or {},
+        finishing=recipe_state.get("finishing") or {},
+    )
+    return f"♡ Saved **{recipe.name}**.", gr.update(choices=_recipe_choices(), value=recipe.id)
+
+
+def delete_recipe(recipe_id: str | None):
+    if not recipe_id or not RECIPES.delete(recipe_id):
+        return gr.update(), "Choose a saved sound first."
+    choices = _recipe_choices()
+    return gr.update(choices=choices, value=choices[0][1] if choices else None), "Saved sound deleted."
+
+
+def apply_recipe(recipe_id: str | None):
+    recipe = RECIPES.get(recipe_id)
+    if recipe is None:
+        return (gr.update(),) * 12 + ("Choose a saved sound first.",)
+    generation = recipe.generation or {}
+    return (
+        gr.update(value=recipe.voice),
+        gr.update(value=_model_ui_for_id(recipe.model_id)),
+        gr.update(value=recipe.language),
+        gr.update(value=recipe.style),
+        gr.update(value=recipe.speech_speed),
+        gr.update(value=float(generation.get("exaggeration", 0.5))),
+        gr.update(value=float(generation.get("cfg_weight", 0.5))),
+        gr.update(value=float(generation.get("temperature", 0.8))),
+        gr.update(value=float(generation.get("repetition_penalty", 1.2))),
+        gr.update(value=float(generation.get("min_p", 0.05))),
+        gr.update(value=float(generation.get("top_p", 1.0))),
+        gr.update(value=int(generation.get("top_k", 1000))),
+        f"✅ Loaded **{recipe.name}**. You can still change anything before generating.",
+    )
+
+
+def _generate_core(
+    script, project_id, voice_name, model_ui, language_ui, style, speech_speed,
+    compute_preference, quality_mode, offline_mode, recommended_tuning,
+    exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+    raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+    normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+    collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+    whisper_model, verification_threshold, auto_retries, best_of_n,
+    trim_silence, peak_normalize, fade_ms,
+    *, allow_download: bool, progress: gr.Progress,
 ):
-    model_id, language_name, _, _ = core._resolve_choice(model_ui, language_ui, script or "", compute_preference)
+    effective_language_ui = _effective_language(model_ui, language_ui)
+    model_id, language_name = _resolved_model(model_ui, effective_language_ui, script or "", compute_preference)
     if not _installed(model_id) and not allow_download:
         return None, model_id, language_name, None
-    if allow_download and not _installed(model_id):
+    if not _installed(model_id):
         if offline_mode:
             raise gr.Error("Turn off Offline mode before downloading this model.")
         core.model_manager.download(model_id, offline=False, progress=_friendly_download_callback(progress, model_id))
 
     ex, cfg, temp, rep, mp, tp, tk, speed = _effective_tuning(
-        model_id,
-        style,
-        bool(recommended_tuning),
-        exaggeration,
-        cfg_weight,
-        temperature,
-        repetition_penalty,
-        min_p,
-        top_p,
-        top_k,
-        speech_speed,
+        model_id, style, recommended_tuning, exaggeration, cfg_weight, temperature,
+        repetition_penalty, min_p, top_p, top_k, speech_speed,
     )
     result = core.generate_audio(
-        script,
-        project_id,
-        voice_name,
-        model_ui,
-        language_ui if language_control_needed(core.model_id_from_ui_name(model_ui)) else "English",
-        style,
-        speed,
-        compute_preference,
-        quality_mode,
-        offline_mode,
-        False,
-        ex,
-        cfg,
-        temp,
-        rep,
-        mp,
-        tp,
-        tk,
-        raw_mode,
-        smart_chunking,
-        max_chars,
-        chunk_gap_seconds,
-        seed,
-        normalize_unicode,
-        normalize_punctuation,
-        normalize_numbers,
-        replace_urls,
-        collapse_punctuation,
-        normalize_whitespace,
-        quality_check,
-        verify_stt,
-        whisper_model,
-        verification_threshold,
-        auto_retries,
-        best_of_n,
-        trim_silence,
-        peak_normalize,
-        fade_ms,
-        progress,
+        script, project_id, voice_name, model_ui, effective_language_ui, style, speed,
+        compute_preference, quality_mode, offline_mode, False,
+        ex, cfg, temp, rep, mp, tp, tk,
+        raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+        normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+        collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+        whisper_model, verification_threshold, auto_retries, best_of_n,
+        trim_silence, peak_normalize, fade_ms, progress,
     )
-    generation = {
-        "exaggeration": ex,
-        "cfg_weight": cfg,
-        "temperature": temp,
-        "repetition_penalty": rep,
-        "min_p": mp,
-        "top_p": tp,
-        "top_k": tk,
-        "seed": seed,
-    }
-    finishing = {"trim_silence": bool(trim_silence), "peak_normalize": bool(peak_normalize), "fade_ms": int(fade_ms)}
     recipe = _recipe_payload(
-        audio_path=result[0],
-        metadata_path=result[2],
-        model_id=model_id,
-        voice_name=voice_name,
-        language_name=language_name,
-        style=style,
-        speech_speed=speed,
-        generation=generation,
-        finishing=finishing,
+        result[0], result[2], voice_name, model_id, language_name, style, speed,
+        {
+            "exaggeration": ex,
+            "cfg_weight": cfg,
+            "temperature": temp,
+            "repetition_penalty": rep,
+            "min_p": mp,
+            "top_p": tp,
+            "top_k": tk,
+            "seed": seed,
+        },
+        {"trim_silence": bool(trim_silence), "peak_normalize": bool(peak_normalize), "fade_ms": int(fade_ms)},
     )
     return result, model_id, language_name, recipe
 
 
-def generate_product(*args, progress=gr.Progress()):
+def generate_product(
+    script, project_id, voice_name, model_ui, language_ui, style, speech_speed,
+    compute_preference, quality_mode, offline_mode, recommended_tuning,
+    exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+    raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+    normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+    collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+    whisper_model, verification_threshold, auto_retries, best_of_n,
+    trim_silence, peak_normalize, fade_ms, progress=gr.Progress(),
+):
     try:
-        result, model_id, _, recipe = _generation_call(*args, allow_download=False, progress=progress)
+        result, model_id, _, recipe = _generate_core(
+            script, project_id, voice_name, model_ui, language_ui, style, speech_speed,
+            compute_preference, quality_mode, offline_mode, recommended_tuning,
+            exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+            raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+            normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+            collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+            whisper_model, verification_threshold, auto_retries, best_of_n,
+            trim_silence, peak_normalize, fade_ms, allow_download=False, progress=progress,
+        )
         if result is None:
             estimate = MODEL_ESTIMATES_GB.get(model_id)
             size = f" · about {estimate:.1f} GB" if estimate else ""
-            note = (
-                f"### {MODEL_NAMES[model_id]} needs to be downloaded\n"
-                f"This model is required for your current choice{size}. It will only download if you approve it."
-            )
             return (
                 gr.update(), gr.update(), gr.update(),
                 f"**{MODEL_NAMES[model_id]}** is not installed yet.",
                 gr.update(), gr.update(), gr.update(),
-                core._model_state_line(args[3], args[4], args[0], args[7]),
-                gr.update(visible=True), note, model_id,
-                gr.update(interactive=False), None,
+                core._model_state_line(model_ui, _effective_language(model_ui, language_ui), script, compute_preference),
+                gr.update(visible=True),
+                f"### Download {MODEL_NAMES[model_id]}?\nThis model is needed for your current choice{size}. Nothing downloads until you approve it.",
+                model_id, gr.update(interactive=False), None,
             )
         return (*result, gr.update(visible=False), "", None, gr.update(interactive=True), recipe)
     except Exception as exc:
@@ -493,11 +471,30 @@ def generate_product(*args, progress=gr.Progress()):
         raise gr.Error(core._friendly_error(exc)) from exc
 
 
-def download_and_generate_product(pending_model_id, *args, progress=gr.Progress()):
+def download_and_generate_product(
+    pending_model_id,
+    script, project_id, voice_name, model_ui, language_ui, style, speech_speed,
+    compute_preference, quality_mode, offline_mode, recommended_tuning,
+    exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+    raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+    normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+    collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+    whisper_model, verification_threshold, auto_retries, best_of_n,
+    trim_silence, peak_normalize, fade_ms, progress=gr.Progress(),
+):
     if not pending_model_id:
         raise gr.Error("There is no pending model download.")
     try:
-        result, _, _, recipe = _generation_call(*args, allow_download=True, progress=progress)
+        result, _, _, recipe = _generate_core(
+            script, project_id, voice_name, model_ui, language_ui, style, speech_speed,
+            compute_preference, quality_mode, offline_mode, recommended_tuning,
+            exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+            raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+            normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+            collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+            whisper_model, verification_threshold, auto_retries, best_of_n,
+            trim_silence, peak_normalize, fade_ms, allow_download=True, progress=progress,
+        )
         if result is None:
             raise RuntimeError("The model could not be prepared.")
         return (*result, gr.update(visible=False), "", None, gr.update(interactive=True), recipe)
@@ -525,45 +522,14 @@ def _compare_outputs(results: dict[str, str | None], recipes: dict[str, dict | N
 
 
 def compare_selected_models(
-    selected_models,
-    script,
-    project_id,
-    voice_name,
-    language_ui,
-    style,
-    speech_speed,
-    compute_preference,
-    quality_mode,
-    offline_mode,
-    recommended_tuning,
-    exaggeration,
-    cfg_weight,
-    temperature,
-    repetition_penalty,
-    min_p,
-    top_p,
-    top_k,
-    raw_mode,
-    smart_chunking,
-    max_chars,
-    chunk_gap_seconds,
-    seed,
-    normalize_unicode,
-    normalize_punctuation,
-    normalize_numbers,
-    replace_urls,
-    collapse_punctuation,
-    normalize_whitespace,
-    quality_check,
-    verify_stt,
-    whisper_model,
-    verification_threshold,
-    auto_retries,
-    best_of_n,
-    trim_silence,
-    peak_normalize,
-    fade_ms,
-    progress=gr.Progress(),
+    selected_models, script, project_id, voice_name, language_ui, style, speech_speed,
+    compute_preference, quality_mode, offline_mode, recommended_tuning,
+    exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+    raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+    normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+    collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+    whisper_model, verification_threshold, auto_retries, best_of_n,
+    trim_silence, peak_normalize, fade_ms, progress=gr.Progress(),
 ):
     if not (script or "").strip():
         raise gr.Error("Write something first.")
@@ -592,8 +558,8 @@ def compare_selected_models(
                     repetition_penalty, min_p, top_p, top_k, speech_speed,
                 )
                 kwargs = core._generation_kwargs(
-                    voice_name, model_id, language_name, ex, cfg, temp, rep, mp, tp, tk, speed,
-                    raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+                    voice_name, model_id, language_name, ex, cfg, temp, rep, mp, tp, tk,
+                    speed, raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
                     progress_callback=core._engine_progress(progress, prefix=f"{label} · "),
                 )
                 reliable = core.generate_reliably(
@@ -610,19 +576,14 @@ def compare_selected_models(
                 final_audio = core._finish_audio(selected.result.audio_path, trim_silence, peak_normalize, fade_ms)
                 results[model_id] = str(final_audio)
                 recipes[model_id] = _recipe_payload(
-                    audio_path=str(final_audio),
-                    metadata_path=str(selected.result.metadata_path),
-                    model_id=model_id,
-                    voice_name=voice_name,
-                    language_name=language_name,
-                    style=style,
-                    speech_speed=speed,
-                    generation={
+                    str(final_audio), str(selected.result.metadata_path), voice_name, model_id,
+                    language_name, style, speed,
+                    {
                         "exaggeration": ex, "cfg_weight": cfg, "temperature": temp,
                         "repetition_penalty": rep, "min_p": mp, "top_p": tp,
                         "top_k": tk, "seed": seed,
                     },
-                    finishing={"trim_silence": bool(trim_silence), "peak_normalize": bool(peak_normalize), "fade_ms": int(fade_ms)},
+                    {"trim_silence": bool(trim_silence), "peak_normalize": bool(peak_normalize), "fade_ms": int(fade_ms)},
                 )
                 completed.append(label)
                 if project_id:
@@ -631,8 +592,10 @@ def compare_selected_models(
                     except Exception:
                         pass
                 remaining = total - index
-                status = f"✅ **{label} ready**" + (f" · {remaining} remaining" if remaining else "")
-                yield _compare_outputs(results, recipes, status)
+                yield _compare_outputs(
+                    results, recipes,
+                    f"✅ **{label} ready**" + (f" · {remaining} remaining" if remaining else ""),
+                )
             except Exception as exc:
                 completed.append(f"{label} failed")
                 yield _compare_outputs(results, recipes, f"⚠️ **{label}** could not finish: {core._friendly_error(exc)}")
@@ -653,7 +616,7 @@ def _compare_busy():
 
 
 def _compare_idle(selected):
-    return gr.update(value="Compare selected", interactive=len(selected or []) >= 2), gr.update(visible=False)
+    return gr.update(value="Compare", interactive=len(selected or []) >= 2), gr.update(visible=False)
 
 
 def _generate_busy():
@@ -720,7 +683,7 @@ initial_script = _initial_script()
 initial_model_id, initial_profile = _resolve_profile(initial_model_ui, initial_language_ui, initial_script, initial_compute, initial_style)
 initial_caps = capabilities_for(initial_model_id)
 compare_choices, compare_selected, compare_note, compare_enabled = _compare_data(initial_language_ui, initial_script, None)
-recipe_choices = [(item.name, item.id) for item in RECIPES.list()]
+recipe_choices = _recipe_choices()
 
 with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     pending_model = gr.State(None)
@@ -728,6 +691,10 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     compare_recipe_v3 = gr.State(None)
     compare_recipe_turbo = gr.State(None)
     compare_recipe_nano = gr.State(None)
+    compute_state = gr.State(initial_compute)
+    quality_state = gr.State(initial_quality)
+    offline_state = gr.State(bool(core.settings.get("offline_mode", False)))
+    no_auto_download = gr.State(False)
 
     gr.HTML(
         """
@@ -748,12 +715,8 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                         project_refresh = gr.Button("↻", size="sm", scale=0, min_width=44, elem_id="project-refresh")
 
                     script = gr.Textbox(
-                        label="Script",
-                        value=initial_script,
-                        lines=14,
-                        max_lines=30,
-                        placeholder="Write or paste what you want to hear…",
-                        elem_id="script-box",
+                        label="Script", value=initial_script, lines=14, max_lines=30,
+                        placeholder="Write or paste what you want to hear…", elem_id="script-box",
                     )
                     with gr.Row(elem_classes="quick-row"):
                         pause_025 = gr.Button("+ 0.25s", size="sm", variant="secondary")
@@ -762,11 +725,9 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                         pause_2 = gr.Button("+ 2s", size="sm", variant="secondary")
 
                     with gr.Group(visible=initial_caps.expressive_tags, elem_id="tag-tools") as tag_group:
-                        gr.Markdown("<span class='micro-label'>Expression tags</span>")
+                        gr.HTML("<span class='micro-label'>Expression tags</span>")
                         with gr.Row(elem_classes="tag-row"):
-                            tag_buttons = []
-                            for tag in core.PARALINGUISTIC_TAGS:
-                                tag_buttons.append((gr.Button(tag, size="sm", variant="secondary"), tag))
+                            tag_buttons = [(gr.Button(tag, size="sm", variant="secondary"), tag) for tag in core.PARALINGUISTIC_TAGS]
 
                     with gr.Row(elem_classes="primary-actions"):
                         generate_btn = gr.Button("Generate", variant="primary", size="lg", elem_id="generate-btn")
@@ -784,9 +745,8 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                     with gr.Row(elem_classes="result-actions"):
                         output_download = gr.DownloadButton("Download audio", variant="secondary")
                         save_result_btn = gr.Button("♡ Save sound", variant="secondary", interactive=False)
-                    with gr.Row(elem_classes="save-recipe-row"):
-                        recipe_name = gr.Textbox(label="Saved sound name", placeholder="e.g. Warm narrator", scale=4)
-                        recipe_status = gr.Markdown(scale=3)
+                    recipe_name = gr.Textbox(label="Saved sound name", placeholder="e.g. Warm narrator")
+                    recipe_status = gr.Markdown()
 
                     with gr.Accordion("Details", open=False):
                         generation_details = gr.Markdown("Generation details appear here.")
@@ -798,12 +758,9 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
 
                     with gr.Accordion("Compare voices", open=False, elem_id="compare-panel"):
                         compare_picker = gr.CheckboxGroup(
-                            label="Models to compare",
-                            choices=compare_choices,
-                            value=compare_selected,
+                            label="Models to compare", choices=compare_choices, value=compare_selected,
                             info="Select exactly what you want to hear. Missing models are never downloaded automatically.",
-                            elem_id="compare-model-picker",
-                            elem_classes="choice-pills",
+                            elem_id="compare-model-picker", elem_classes="choice-pills",
                         )
                         compare_status = gr.Markdown(compare_note, elem_classes="status-line", elem_id="compare-status")
                         with gr.Row(elem_classes="compare-results-row"):
@@ -836,18 +793,22 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                         quick_voice_status = gr.Markdown("A clean 8–15 second recording usually works well.")
 
                     gr.Markdown("### Sound")
-                    model_ui = gr.Dropdown(label="Model", choices=list(core.MODEL_SELECTIONS), value=initial_model_ui, allow_custom_value=False, info="Auto chooses a sensible model for the text and this computer.", elem_id="model-picker")
+                    model_ui = gr.Dropdown(
+                        label="Model", choices=list(core.MODEL_SELECTIONS), value=initial_model_ui,
+                        allow_custom_value=False, info="Auto chooses a sensible model for the text and this computer.",
+                        elem_id="model-picker",
+                    )
                     language_ui = gr.Dropdown(
-                        label="Language",
-                        choices=core.LANGUAGE_CHOICES,
-                        value=initial_language_ui,
+                        label="Language", choices=core.LANGUAGE_CHOICES, value=initial_language_ui,
                         visible=language_control_needed(core.model_id_from_ui_name(initial_model_ui)),
-                        allow_custom_value=False,
-                        elem_id="language-picker",
+                        allow_custom_value=False, elem_id="language-picker",
                     )
                     style = gr.Dropdown(label="Style", choices=list(core.PRESETS), value=initial_style)
                     speech_speed = gr.Slider(0.75, 1.25, value=initial_profile.speech_speed, step=0.01, label="Speed")
-                    model_state = gr.Markdown(core._model_state_line(initial_model_ui, initial_language_ui, initial_script, initial_compute), elem_classes="model-choice-note", elem_id="model-state")
+                    model_state = gr.Markdown(
+                        core._model_state_line(initial_model_ui, initial_language_ui, initial_script, initial_compute),
+                        elem_classes="model-choice-note", elem_id="model-state",
+                    )
 
                     gr.Markdown("### Saved sounds")
                     saved_recipe = gr.Dropdown(label="Recipe", choices=recipe_choices, value=recipe_choices[0][1] if recipe_choices else None)
@@ -855,8 +816,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                         apply_recipe_btn = gr.Button("Use saved sound")
                         delete_recipe_btn = gr.Button("Delete", variant="stop")
                     saved_recipe_status = gr.Markdown("Save a result you love and reuse the exact sound later.")
-
-                    gr.Markdown("<div class='soft-note'>Most technical decisions are automatic. Fine controls live in <b>Settings → Expert</b>.</div>")
+                    gr.HTML("<div class='soft-note'>Most technical decisions are automatic. Fine controls live in <b>Settings → Expert</b>.</div>")
 
         with gr.Tab("Library"):
             with gr.Tabs():
@@ -867,7 +827,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                             library_voice_name = gr.Textbox(label="Name", placeholder="Narrator")
                             library_voice_save = gr.Button("Save voice", variant="primary")
                             library_voice_refresh = gr.Button("Refresh")
-                            gr.Markdown("<div class='soft-note'>Starter voice packs will live here later. Only voices with clear redistribution rights will be bundled.</div>")
+                            gr.HTML("<div class='soft-note'>Starter voice packs will live here later. Only voices with clear redistribution rights will be bundled.</div>")
                         with gr.Column(scale=3, elem_classes="workspace-card"):
                             voice_manage = gr.Dropdown(label="Your voices", choices=available_voices, value=initial_voice)
                             voice_preview = gr.Audio(label="Preview", interactive=False)
@@ -930,9 +890,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                             batch_voice = gr.Dropdown(label="Voice", choices=available_voices, value=initial_voice)
                             batch_model = gr.Dropdown(label="Model", choices=list(core.MODEL_SELECTIONS), value=initial_model_ui)
                             batch_language = gr.Dropdown(
-                                label="Language",
-                                choices=core.LANGUAGE_CHOICES,
-                                value=initial_language_ui,
+                                label="Language", choices=core.LANGUAGE_CHOICES, value=initial_language_ui,
                                 visible=language_control_needed(core.model_id_from_ui_name(initial_model_ui)),
                             )
                             batch_fit = gr.Checkbox(label="Fit subtitle clips to cue timing", value=bool(core.settings["batch_fit_timing"]))
@@ -942,7 +900,11 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                             batch_output_dir = gr.Textbox(label="Output folder", interactive=False)
                             batch_status = gr.Markdown()
                         with gr.Column(scale=4, elem_classes="workspace-card"):
-                            batch_table = gr.Dataframe(headers=["id", "text", "start", "end", "target duration"], datatype=["str", "str", "number", "number", "number"], interactive=False, wrap=True, label="Items")
+                            batch_table = gr.Dataframe(
+                                headers=["id", "text", "start", "end", "target duration"],
+                                datatype=["str", "str", "number", "number", "number"],
+                                interactive=False, wrap=True, label="Items",
+                            )
 
         with gr.Tab("Models"):
             gr.Markdown("## Models")
@@ -950,20 +912,21 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
             with gr.Row(elem_classes="model-toolbar"):
                 model_search = gr.Textbox(label="Search models", placeholder="Search by name, language or purpose…", scale=3)
                 model_filter = gr.Radio(label="Show", choices=["All", "Installed", "Available"], value="All", elem_classes="choice-pills", scale=2)
-            model_groups = []
+            model_groups: list[Any] = []
             model_card_components: list[Any] = []
+            model_buttons: dict[str, tuple[Any, Any, Any, Any]] = {}
             for model_id in MODEL_IDS:
-                with gr.Group(elem_classes="model-library-card") as card_group:
+                safe_id = model_id.replace("-", "_")
+                with gr.Group(elem_classes="model-library-card", elem_id=f"model-card-{safe_id}") as card_group:
                     model_groups.append(card_group)
                     card_text = gr.HTML(_model_card_text(model_id))
                     with gr.Row():
-                        install_btn = gr.Button("Download", variant="primary", visible=not _installed(model_id))
-                        use_btn = gr.Button("Use", variant="primary", visible=_installed(model_id))
-                        update_btn = gr.Button("Update", visible=_installed(model_id))
-                        remove_btn = gr.Button("Remove", variant="stop", visible=_installed(model_id))
+                        install_btn = gr.Button("Download", variant="primary", visible=not _installed(model_id), elem_id=f"model-download-{safe_id}")
+                        use_btn = gr.Button("Use", variant="primary", visible=_installed(model_id), elem_id=f"model-use-{safe_id}")
+                        update_btn = gr.Button("Update", visible=_installed(model_id), elem_id=f"model-update-{safe_id}")
+                        remove_btn = gr.Button("Remove", variant="stop", visible=_installed(model_id), elem_id=f"model-remove-{safe_id}")
+                    model_buttons[model_id] = (install_btn, use_btn, update_btn, remove_btn)
                     model_card_components.extend([card_text, install_btn, use_btn, update_btn, remove_btn])
-                    # Bind fixed model IDs while preserving a single friendly status surface.
-                    install_btn.click(lambda offline, mid=model_id: install_model_by_id(mid, offline), inputs=offline_mode if 'offline_mode' in locals() else None, outputs=None)
             model_action_status = gr.Markdown("Choose a model action above.", elem_classes="status-line")
             with gr.Row(equal_height=False):
                 with gr.Column(scale=2, elem_classes="workspace-card"):
@@ -987,7 +950,6 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                     fade_ms = gr.Slider(0, 250, value=int(core.settings["fade_ms"]), step=5, label="Short fade (ms)")
                     save_preferences = gr.Button("Save settings", variant="primary")
                     preferences_status = gr.Markdown()
-
                     gr.Markdown("### Speech tools")
                     speech_tools_note = gr.Markdown(core.speech_tools_status())
                     install_speech_btn = gr.Button("Install speech tools")
@@ -995,9 +957,8 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                 with gr.Column(scale=3, elem_classes="workspace-card"):
                     with gr.Accordion("Expert", open=False):
                         recommended_tuning = gr.Checkbox(
-                            label="Use recommended tuning for each model and style",
-                            value=True,
-                            info="Recommended keeps each model on its own sensible defaults. Turn this off only when you want to tune the technical controls yourself.",
+                            label="Use recommended tuning for each model and style", value=True,
+                            info="Recommended keeps each model on its own sensible defaults. Turn this off only when you want to tune technical controls yourself.",
                         )
                         raw_mode = gr.Checkbox(label="Raw model text path", value=bool(core.settings["raw_mode"]), info="Bypasses pause parsing, chunking, and text cleanup.")
                         smart_chunking = gr.Checkbox(label="Split long text automatically", value=bool(core.settings["smart_chunking"]))
@@ -1038,13 +999,17 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
                     with gr.Accordion("Diagnostics", open=False):
                         diagnostics_box = gr.Code(value=core.format_diagnostics(core.collect_diagnostics(ROOT)), language="json", label="Technical diagnostics", interactive=False)
                         diagnostics_refresh = gr.Button("Refresh diagnostics")
-
                     with gr.Accordion("About & open-source credits", open=False):
                         gr.Markdown("Creator Studio is an independent local application. The current product name and visual identity are temporary. Current speech models are open-source Chatterbox models; full attribution and licenses are in NOTICE.md, LICENSE, and the repository README.")
 
     gr.HTML("<div class='footer-note'><span>Runs locally by default.</span><span>Credits & licenses are in About.</span></div>")
 
-    # Dynamic sound controls: English-only models do not show a redundant language selector.
+    # Settings mirror into simple State objects so actions in earlier tabs can use them
+    # without creating duplicate event handlers or depending on tab construction order.
+    compute_preference.change(lambda value: value, inputs=compute_preference, outputs=compute_state, queue=False)
+    quality_mode.change(lambda value: value, inputs=quality_mode, outputs=quality_state, queue=False)
+    offline_mode.change(lambda value: bool(value), inputs=offline_mode, outputs=offline_state, queue=False)
+
     sound_control_outputs = [
         language_ui, exaggeration, cfg_weight, temperature, repetition_penalty, min_p,
         top_p, top_k, speech_speed, multilingual_expert_group, top_k_group, tag_group, model_state,
@@ -1052,14 +1017,13 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     for component in (model_ui, style):
         component.change(
             update_sound_controls,
-            inputs=[model_ui, language_ui, script, compute_preference, style],
+            inputs=[model_ui, language_ui, script, compute_state, style],
             outputs=sound_control_outputs,
             queue=False,
         )
-    for component in (language_ui, script, compute_preference):
-        component.change(core._model_state_line, inputs=[model_ui, language_ui, script, compute_preference], outputs=model_state, queue=False)
+    for component in (language_ui, script):
+        component.change(core._model_state_line, inputs=[model_ui, language_ui, script, compute_state], outputs=model_state, queue=False)
 
-    # Pause and expression actions always insert at the current caret.
     for button, token in ((pause_025, "[pause=0.25]"), (pause_05, "[pause=0.5]"), (pause_1, "[pause=1]"), (pause_2, "[pause=2]")):
         button.click(lambda text: text, inputs=script, outputs=script, js=_insert_js(token), queue=False)
     for button, token in tag_buttons:
@@ -1080,7 +1044,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
 
     generation_inputs = [
         script, project_dropdown, voice_dropdown, model_ui, language_ui, style, speech_speed,
-        compute_preference, quality_mode, offline_mode, recommended_tuning,
+        compute_state, quality_state, offline_state, recommended_tuning,
         exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
         raw_mode, smart_chunking, max_chars, chunk_gap, seed,
         normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls, collapse_punctuation, normalize_whitespace,
@@ -1103,11 +1067,10 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     compare_turbo_save.click(save_recipe, inputs=[compare_recipe_turbo, recipe_name], outputs=[recipe_status, saved_recipe], queue=False)
     compare_nano_save.click(save_recipe, inputs=[compare_recipe_nano, recipe_name], outputs=[recipe_status, saved_recipe], queue=False)
     apply_recipe_btn.click(
-        apply_recipe,
-        inputs=saved_recipe,
+        apply_recipe, inputs=saved_recipe,
         outputs=[voice_dropdown, model_ui, language_ui, style, speech_speed, exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k, saved_recipe_status],
         queue=False,
-    ).then(update_sound_controls, inputs=[model_ui, language_ui, script, compute_preference, style], outputs=sound_control_outputs, queue=False)
+    ).then(update_sound_controls, inputs=[model_ui, language_ui, script, compute_state, style], outputs=sound_control_outputs, queue=False)
     delete_recipe_btn.click(delete_recipe, inputs=saved_recipe, outputs=[saved_recipe, saved_recipe_status], queue=False)
 
     for component in (language_ui, script):
@@ -1116,7 +1079,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
 
     compare_inputs = [
         compare_picker, script, project_dropdown, voice_dropdown, language_ui, style, speech_speed,
-        compute_preference, quality_mode, offline_mode, recommended_tuning,
+        compute_state, quality_state, offline_state, recommended_tuning,
         exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
         raw_mode, smart_chunking, max_chars, chunk_gap, seed,
         normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls, collapse_punctuation, normalize_whitespace,
@@ -1137,14 +1100,14 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     project_refresh.click(core.refresh_projects, outputs=project_dropdown, queue=False)
     create_project_btn.click(core.create_project, inputs=project_name, outputs=[project_dropdown, project_status], queue=False)
     load_project_btn.click(core.load_project, inputs=project_dropdown, outputs=[script, voice_dropdown, model_ui, language_ui, project_name, project_status], queue=False)
-    save_project_btn.click(core.save_project, inputs=[project_dropdown, project_name, script, voice_dropdown, model_ui, language_ui, compute_preference], outputs=project_status, queue=False)
+    save_project_btn.click(core.save_project, inputs=[project_dropdown, project_name, script, voice_dropdown, model_ui, language_ui, compute_state], outputs=project_status, queue=False)
     delete_project_btn.click(core.delete_project, inputs=project_dropdown, outputs=[project_dropdown, project_status], queue=False)
     takes_refresh.click(core.project_take_choices, inputs=project_dropdown, outputs=project_takes, queue=False)
     take_load.click(core.load_take, inputs=project_takes, outputs=[output_audio, output_download], queue=False)
     if initial_project:
         demo.load(core.project_take_choices, inputs=project_dropdown, outputs=project_takes, queue=False)
     for component in (script, voice_dropdown, model_ui, language_ui):
-        component.change(core.autosave_project, inputs=[project_dropdown, script, voice_dropdown, model_ui, language_ui, compute_preference], outputs=project_status, queue=False)
+        component.change(core.autosave_project, inputs=[project_dropdown, script, voice_dropdown, model_ui, language_ui, compute_state], outputs=project_status, queue=False)
 
     history_refresh.click(core.refresh_history, outputs=history, queue=False)
     history_load.click(core.load_history, inputs=history, outputs=[history_audio, history_download, history_metadata, history_note], queue=False)
@@ -1153,7 +1116,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     batch_model.change(update_batch_language, inputs=[batch_model, batch_language], outputs=batch_language, queue=False)
     batch_parse.click(core.preview_batch_file, inputs=batch_file, outputs=[batch_state, batch_table, batch_status], queue=False)
     batch_inputs = [
-        batch_state, batch_voice, batch_model, batch_language, speech_speed, compute_preference, offline_mode, gr.State(False),
+        batch_state, batch_voice, batch_model, batch_language, speech_speed, compute_state, offline_state, no_auto_download,
         exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
         raw_mode, smart_chunking, max_chars, chunk_gap, seed,
         normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls, collapse_punctuation, normalize_whitespace,
@@ -1162,17 +1125,16 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     ]
     batch_run.click(core.run_batch_ui, inputs=batch_inputs, outputs=[batch_manifest, batch_output_dir, batch_status], show_progress="minimal")
 
-    stt_btn.click(core.transcribe_ui, inputs=[stt_audio, stt_quality, stt_language, compute_preference], outputs=[stt_text, stt_segments, stt_status], show_progress="minimal")
+    stt_btn.click(core.transcribe_ui, inputs=[stt_audio, stt_quality, stt_language, compute_state], outputs=[stt_text, stt_segments, stt_status], show_progress="minimal")
     stt_install_btn.click(install_speech_tools_inline, outputs=[stt_status, stt_install_btn], show_progress="minimal")
 
-    # Model library actions. Each card owns its action, so there is no detached selector.
     all_model_outputs = model_card_components
-    for index, model_id in enumerate(MODEL_IDS):
-        card_text, install_btn, use_btn, update_btn, remove_btn = model_card_components[index * 5:(index + 1) * 5]
-        install_btn.click(lambda offline, mid=model_id: install_model_by_id(mid, offline), inputs=offline_mode, outputs=model_action_status, show_progress="minimal").then(refresh_all_model_cards, outputs=all_model_outputs, queue=False).then(refresh_compare_picker, inputs=[language_ui, script, compare_picker], outputs=[compare_picker, compare_status, compare_btn], queue=False)
-        use_btn.click(lambda compute, offline, mid=model_id: use_model_by_id(mid, compute, offline), inputs=[compute_preference, offline_mode], outputs=model_action_status, show_progress="minimal").then(refresh_all_model_cards, outputs=all_model_outputs, queue=False)
-        update_btn.click(lambda offline, mid=model_id: update_model_by_id(mid, offline), inputs=offline_mode, outputs=model_action_status, show_progress="minimal").then(refresh_all_model_cards, outputs=all_model_outputs, queue=False)
-        remove_btn.click(lambda mid=model_id: remove_model_by_id(mid), outputs=model_action_status, queue=False).then(refresh_all_model_cards, outputs=all_model_outputs, queue=False).then(refresh_compare_picker, inputs=[language_ui, script, compare_picker], outputs=[compare_picker, compare_status, compare_btn], queue=False)
+    for model_id in MODEL_IDS:
+        install_btn, use_btn, update_btn, remove_btn = model_buttons[model_id]
+        install_btn.click(_model_install_action(model_id), inputs=offline_state, outputs=model_action_status, show_progress="minimal").then(refresh_all_model_cards, outputs=all_model_outputs, queue=False).then(refresh_compare_picker, inputs=[language_ui, script, compare_picker], outputs=[compare_picker, compare_status, compare_btn], queue=False)
+        use_btn.click(_model_use_action(model_id), inputs=[compute_state, offline_state], outputs=model_action_status, show_progress="minimal").then(refresh_all_model_cards, outputs=all_model_outputs, queue=False)
+        update_btn.click(_model_update_action(model_id), inputs=offline_state, outputs=model_action_status, show_progress="minimal").then(refresh_all_model_cards, outputs=all_model_outputs, queue=False)
+        remove_btn.click(_model_remove_action(model_id), outputs=model_action_status, queue=False).then(refresh_all_model_cards, outputs=all_model_outputs, queue=False).then(refresh_compare_picker, inputs=[language_ui, script, compare_picker], outputs=[compare_picker, compare_status, compare_btn], queue=False)
 
     for component in (model_search, model_filter):
         component.change(filter_model_cards, inputs=[model_search, model_filter], outputs=model_groups, queue=False)
@@ -1181,8 +1143,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     save_preferences.click(
         lambda compute, quality, offline, trim, normalize, fade: core.save_user_preferences(compute, quality, offline, False, trim, normalize, fade),
         inputs=[compute_preference, quality_mode, offline_mode, trim_silence, peak_normalize, fade_ms],
-        outputs=preferences_status,
-        queue=False,
+        outputs=preferences_status, queue=False,
     )
     install_speech_btn.click(core.install_speech_tools, outputs=speech_tools_note, show_progress="minimal")
     diagnostics_refresh.click(core.refresh_hardware, outputs=[hardware_box, diagnostics_box], queue=False)
