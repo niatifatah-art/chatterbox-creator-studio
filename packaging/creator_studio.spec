@@ -2,7 +2,9 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-root = Path(SPECPATH).parent.parent
+# SPECPATH is the directory containing this spec. The repository root is its parent.
+# Using parent.parent accidentally escaped the Actions checkout directory on Windows.
+root = Path(SPECPATH).parent.resolve()
 
 datas = [
     (str(root / "assets"), "assets"),
