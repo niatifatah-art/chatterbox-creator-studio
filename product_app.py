@@ -12,6 +12,7 @@ import gradio as gr
 # is the supported product surface and deliberately keeps model/provider details out
 # of the normal creator workflow.
 import app as core
+from studio.cancellation import clear_generation_cancel, raise_if_generation_cancelled, request_generation_cancel
 from studio.model_profiles import capabilities_for, language_control_needed, profile_for
 from studio.paths import resolve_storage_root
 from studio.recipes import RecipeStore
@@ -53,6 +54,36 @@ MODEL_SHORT = {
     "nano": "Lightweight English · friendly to CPU-only computers",
 }
 
+# Gradio's generic `cancels=` cannot interrupt an already-running synchronous Python
+# function. Normal TTS generation therefore uses a cooperative flag that is checked at
+# model-load/download progress points and immediately before/after each speech chunk.
+# A model's current blocking inference call is allowed to finish safely; no thread is
+# killed while PyTorch owns model state.
+_BASE_ENGINE_PROGRESS = core._engine_progress
+_BASE_DOWNLOAD_PROGRESS = core._model_download_progress
+
+
+def _cancellable_engine_progress(progress: gr.Progress, prefix: str = ""):
+    base = _BASE_ENGINE_PROGRESS(progress, prefix=prefix)
+
+    def callback(desc: str, current: int | None, total: int | None) -> None:
+        raise_if_generation_cancelled()
+        base(desc, current, total)
+        raise_if_generation_cancelled()
+
+    return callback
+
+
+def _cancellable_download_progress(progress: gr.Progress):
+    base = _BASE_DOWNLOAD_PROGRESS(progress)
+
+    def callback(current: int, total: int | None, desc: str) -> None:
+        raise_if_generation_cancelled()
+        base(current, total, desc)
+        raise_if_generation_cancelled()
+
+    return callback
+
 
 def _installed(model_id: str) -> bool:
     try:
@@ -79,10 +110,12 @@ def _friendly_download_callback(progress: gr.Progress, model_id: str):
     label = MODEL_NAMES[model_id]
 
     def callback(current: int, total: int | None, _upstream_desc: str) -> None:
+        raise_if_generation_cancelled()
         if total and total > 0:
             core._gr_progress(progress, f"Downloading {label}", current, total, unit="file")
         else:
             core._gr_progress(progress, f"Preparing {label}…", None, None, unit="file")
+        raise_if_generation_cancelled()
 
     return callback
 
@@ -455,16 +488,26 @@ def _generate_core(
         model_id, style, recommended_tuning, exaggeration, cfg_weight, temperature,
         repetition_penalty, min_p, top_p, top_k, speech_speed,
     )
-    result = core.generate_audio(
-        script, project_id, voice_name, model_ui, effective_language_ui, style, speed,
-        compute_preference, quality_mode, offline_mode, False,
-        ex, cfg, temp, rep, mp, tp, tk,
-        raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
-        normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
-        collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
-        whisper_model, verification_threshold, auto_retries, best_of_n,
-        trim_silence, peak_normalize, fade_ms, progress,
-    )
+    original_engine_progress = core._engine_progress
+    original_download_progress = core._model_download_progress
+    core._engine_progress = _cancellable_engine_progress
+    core._model_download_progress = _cancellable_download_progress
+    try:
+        raise_if_generation_cancelled()
+        result = core.generate_audio(
+            script, project_id, voice_name, model_ui, effective_language_ui, style, speed,
+            compute_preference, quality_mode, offline_mode, False,
+            ex, cfg, temp, rep, mp, tp, tk,
+            raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+            normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+            collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+            whisper_model, verification_threshold, auto_retries, best_of_n,
+            trim_silence, peak_normalize, fade_ms, progress,
+        )
+        raise_if_generation_cancelled()
+    finally:
+        core._engine_progress = original_engine_progress
+        core._model_download_progress = original_download_progress
     recipe = _recipe_payload(
         result[0], result[2], voice_name, model_id, language_name, style, speed,
         {
@@ -704,11 +747,18 @@ def _compare_idle(selected):
 
 
 def _generate_busy():
-    return gr.update(value="Generating…", interactive=False), gr.update(visible=True)
+    clear_generation_cancel()
+    return gr.update(value="Generating…", interactive=False), gr.update(value="Stop", visible=True, interactive=True)
 
 
 def _generate_idle():
-    return gr.update(value="Generate", interactive=True), gr.update(visible=False)
+    clear_generation_cancel()
+    return gr.update(value="Generate", interactive=True), gr.update(value="Stop", visible=False, interactive=True)
+
+
+def request_generation_stop():
+    request_generation_cancel()
+    return "Stopping safely after the current speech step…", gr.update(value="Stopping…", interactive=False)
 
 
 def install_speech_tools_inline(progress=gr.Progress()):
@@ -1149,12 +1199,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     download_event = download_start.then(download_and_generate_product, inputs=[pending_model, *generation_inputs], outputs=generation_outputs, show_progress="minimal")
     download_event.then(_generate_idle, outputs=[generate_btn, generate_cancel], queue=False)
     download_cancel_btn.click(cancel_model_prompt, outputs=[download_confirm, download_confirm_text, pending_model], queue=False)
-    generate_cancel.click(
-        lambda: "Stopping generation…",
-        outputs=create_status,
-        cancels=[generate_event, download_event],
-        queue=False,
-    ).then(_generate_idle, outputs=[generate_btn, generate_cancel], queue=False)
+    generate_cancel.click(request_generation_stop, outputs=[create_status, generate_cancel], queue=False)
 
     save_result_btn.click(save_recipe, inputs=[last_recipe_state, recipe_name], outputs=[recipe_status, saved_recipe], queue=False)
     compare_v3_save.click(save_recipe, inputs=[compare_recipe_v3, recipe_name], outputs=[recipe_status, saved_recipe], queue=False)
