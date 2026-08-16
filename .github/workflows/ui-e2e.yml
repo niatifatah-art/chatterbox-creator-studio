@@ -23,6 +23,10 @@ on:
       - "requirements*.txt"
       - ".github/workflows/ui-e2e.yml"
 
+concurrency:
+  group: ui-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   chromium:
     runs-on: ubuntu-latest
@@ -30,6 +34,7 @@ jobs:
     env:
       CREATOR_STUDIO_BASE_URL: http://127.0.0.1:7860
       GRADIO_ANALYTICS_ENABLED: "False"
+      UI_ARTIFACT_DIR: ui-artifacts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -56,6 +61,14 @@ jobs:
           exit 1
       - name: Run browser product checks
         run: pytest -q tests/test_ui_e2e.py
+      - name: Upload product screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-e2e-screenshots
+          path: ui-artifacts/
+          if-no-files-found: ignore
+          retention-days: 5
       - name: Show server log on failure
         if: failure()
         run: cat /tmp/creator-studio-ui.log || true
