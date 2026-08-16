@@ -10,6 +10,7 @@ from studio.model_manager import LocalModelManager
 from studio.product import (
     ProductSystemProfile,
     compatible_models,
+    detect_latin_language,
     detect_script_language,
     model_id_from_ui_name,
     quality_policy,
@@ -18,6 +19,7 @@ from studio.product import (
     safe_compare_order,
     script_looks_arabic,
 )
+from studio.settings import DEFAULT_SETTINGS
 
 
 def test_product_names_accept_friendly_and_legacy_values():
@@ -56,12 +58,26 @@ def test_auto_language_recognizes_distinctive_scripts(text: str, expected: str):
     assert resolve_model_id("Auto", "Auto", text, profile) == "multilingual-v3"
 
 
-def test_auto_language_is_conservative_for_latin_script():
-    # Short Latin-script creator text is ambiguous across many supported languages.
-    # Auto stays predictable instead of pretending to know; the language selector
-    # remains available when the user wants Spanish/French/etc.
-    assert detect_script_language("Hola, esto es una prueba de voz.") is None
-    assert resolve_language("Auto", "Hola, esto es una prueba de voz.") == "English"
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Hola, esto es una prueba de voz.", "Spanish"),
+        ("Bonjour, ceci est une voix pour un essai.", "French"),
+        ("Hallo, das ist eine Stimme für einen Test.", "German"),
+        ("Ciao, questa è una prova con una voce.", "Italian"),
+        ("Merhaba, bu bir ses testi için hazır.", "Turkish"),
+    ],
+)
+def test_auto_language_uses_conservative_latin_hints(text: str, expected: str):
+    assert detect_latin_language(text) == expected
+    assert resolve_language("Auto", text) == expected
+    profile = ProductSystemProfile(compute="cpu", ram_gb=16, vram_gb=None)
+    assert resolve_model_id("Auto", "Auto", text, profile) == "multilingual-v3"
+
+
+def test_auto_language_does_not_guess_ambiguous_latin_text():
+    assert detect_latin_language("A short creator line for today") is None
+    assert resolve_language("Auto", "A short creator line for today") == "English"
 
 
 def test_auto_model_prefers_light_on_cpu_for_english():
@@ -92,6 +108,10 @@ def test_compare_order_is_predictable_and_memory_safe():
         "turbo",
         "nano",
     )
+
+
+def test_new_install_does_not_surprise_download_models():
+    assert DEFAULT_SETTINGS["auto_download_models"] is False
 
 
 def test_compute_auto_uses_available_cuda_and_manual_cpu_is_honored():
