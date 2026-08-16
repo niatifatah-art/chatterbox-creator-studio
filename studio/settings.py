@@ -15,7 +15,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "generation_quality": "Balanced",
     "compute_preference": "Auto",
     "offline_mode": False,
-    "auto_download_models": True,
+    "auto_download_models": False,
     "exaggeration": 0.65,
     "cfg_weight": 0.30,
     "temperature": 0.80,
