@@ -1,0 +1,104 @@
+name: windows-package
+
+on:
+  pull_request:
+    paths:
+      - "desktop_launcher.py"
+      - "product_app.py"
+      - "app.py"
+      - "studio/**"
+      - "assets/**"
+      - "packaging/**"
+      - "requirements.txt"
+      - "requirements-optional.txt"
+      - "requirements-desktop.txt"
+      - ".github/workflows/windows-package.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    env:
+      GRADIO_ANALYTICS_ENABLED: "False"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install application, speech tools, and desktop packaging dependencies
+        run: python -m pip install --no-cache-dir -r requirements.txt -r requirements-optional.txt -r requirements-desktop.txt
+
+      - name: Import desktop and product entry points
+        run: python -c "import product_app, desktop_launcher, faster_whisper; print('desktop imports ok')"
+
+      - name: Build one-folder desktop application
+        run: pyinstaller --noconfirm --clean --distpath dist --workpath build packaging/creator_studio.spec
+
+      - name: Self-test packaged local server
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist\CreatorStudio\CreatorStudio.exe"
+          $log = Join-Path $env:RUNNER_TEMP "creator-studio-packaged-self-test.log"
+          $env:CREATOR_STUDIO_SELF_TEST_LOG = $log
+          Remove-Item $log -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $exe -ArgumentList "--self-test" -PassThru
+          if (-not $process.WaitForExit(180000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "--- packaged self-test diagnostics ---"
+            Get-Content $log -ErrorAction SilentlyContinue
+            throw "Packaged application self-test exceeded 180 seconds."
+          }
+          Write-Host "--- packaged self-test diagnostics ---"
+          Get-Content $log -ErrorAction SilentlyContinue
+          if ($process.ExitCode -ne 0) {
+            throw "Packaged application self-test failed with exit code $($process.ExitCode)."
+          }
+          Write-Host "Packaged desktop self-test passed."
+
+      - name: Upload packaged self-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: CreatorStudio-Packaged-SelfTest-Log
+          path: ${{ runner.temp }}/creator-studio-packaged-self-test.log
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Locate or install Inno Setup
+        shell: pwsh
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) {
+            choco install innosetup -y --no-progress
+          }
+          if (-not (Test-Path $compiler)) {
+            throw "Inno Setup compiler is unavailable."
+          }
+          "INNO_COMPILER=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: '& "$env:INNO_COMPILER" "packaging\windows_installer.iss"'
+
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $installer = Get-Item "installer-dist\CreatorStudio-Setup.exe"
+          if ($installer.Length -lt 1000000) { throw "Installer artifact is unexpectedly small." }
+          Write-Host "Installer ready: $([math]::Round($installer.Length / 1MB, 1)) MB"
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: CreatorStudio-Windows-Preview
+          path: installer-dist/CreatorStudio-Setup.exe
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

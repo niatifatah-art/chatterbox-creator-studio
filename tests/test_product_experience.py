@@ -10,6 +10,7 @@ from studio.model_manager import LocalModelManager
 from studio.product import (
     ProductSystemProfile,
     compatible_models,
+    detect_latin_language,
     detect_script_language,
     model_id_from_ui_name,
     quality_policy,
@@ -18,6 +19,7 @@ from studio.product import (
     safe_compare_order,
     script_looks_arabic,
 )
+from studio.settings import DEFAULT_SETTINGS
 
 
 def test_product_names_accept_friendly_and_legacy_values():
@@ -56,12 +58,26 @@ def test_auto_language_recognizes_distinctive_scripts(text: str, expected: str):
     assert resolve_model_id("Auto", "Auto", text, profile) == "multilingual-v3"
 
 
-def test_auto_language_is_conservative_for_latin_script():
-    # Short Latin-script creator text is ambiguous across many supported languages.
-    # Auto stays predictable instead of pretending to know; the language selector
-    # remains available when the user wants Spanish/French/etc.
-    assert detect_script_language("Hola, esto es una prueba de voz.") is None
-    assert resolve_language("Auto", "Hola, esto es una prueba de voz.") == "English"
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Hola, esto es una prueba de voz.", "Spanish"),
+        ("Bonjour, ceci est une voix pour un essai.", "French"),
+        ("Hallo, das ist eine Stimme für einen Test.", "German"),
+        ("Ciao, questa è una prova con una voce.", "Italian"),
+        ("Merhaba, bu bir ses testi için hazır.", "Turkish"),
+    ],
+)
+def test_auto_language_uses_conservative_latin_hints(text: str, expected: str):
+    assert detect_latin_language(text) == expected
+    assert resolve_language("Auto", text) == expected
+    profile = ProductSystemProfile(compute="cpu", ram_gb=16, vram_gb=None)
+    assert resolve_model_id("Auto", "Auto", text, profile) == "multilingual-v3"
+
+
+def test_auto_language_does_not_guess_ambiguous_latin_text():
+    assert detect_latin_language("A short creator line for today") is None
+    assert resolve_language("Auto", "A short creator line for today") == "English"
 
 
 def test_auto_model_prefers_light_on_cpu_for_english():
@@ -80,6 +96,23 @@ def test_explicit_english_only_model_rejects_non_english():
         resolve_model_id("Light", "Arabic", "مرحبا", profile)
 
 
+def test_hidden_english_language_state_cannot_route_arabic_to_light():
+    profile = ProductSystemProfile(compute="cpu", ram_gb=16, vram_gb=None)
+    arabic = "مرحبا، هذا اختبار واضح للصوت باللغة العربية."
+    with pytest.raises(ValueError, match="supports English only"):
+        resolve_model_id("Light", "English", arabic, profile)
+    assert compatible_models("English", arabic) == ("multilingual-v3",)
+    assert resolve_model_id("Auto", "English", arabic, profile) == "multilingual-v3"
+
+
+def test_hidden_english_language_state_cannot_route_detected_spanish_to_english_only_model():
+    profile = ProductSystemProfile(compute="gpu", ram_gb=32, vram_gb=12)
+    spanish = "Hola, esto es una prueba de voz para mi proyecto."
+    with pytest.raises(ValueError, match="supports English only"):
+        resolve_model_id("Expressive", "English", spanish, profile)
+    assert compatible_models("English", spanish) == ("multilingual-v3",)
+
+
 def test_quality_modes_are_simple_but_meaningful():
     assert quality_policy("Fast") == {"quality_check": False, "auto_retries": 0, "best_of_n": 1}
     assert quality_policy("Balanced") == {"quality_check": True, "auto_retries": 0, "best_of_n": 1}
@@ -92,6 +125,10 @@ def test_compare_order_is_predictable_and_memory_safe():
         "turbo",
         "nano",
     )
+
+
+def test_new_install_does_not_surprise_download_models():
+    assert DEFAULT_SETTINGS["auto_download_models"] is False
 
 
 def test_compute_auto_uses_available_cuda_and_manual_cpu_is_honored():

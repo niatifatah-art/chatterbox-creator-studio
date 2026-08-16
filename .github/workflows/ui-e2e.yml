@@ -1,0 +1,80 @@
+name: ui-e2e
+
+on:
+  pull_request:
+    paths:
+      - "product_app.py"
+      - "app.py"
+      - "assets/**"
+      - "studio/**"
+      - "tests/test_ui_e2e.py"
+      - "requirements*.txt"
+      - ".github/workflows/ui-e2e.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "product_app.py"
+      - "app.py"
+      - "assets/**"
+      - "studio/**"
+      - "tests/test_ui_e2e.py"
+      - "requirements*.txt"
+      - ".github/workflows/ui-e2e.yml"
+
+concurrency:
+  group: ui-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CREATOR_STUDIO_BASE_URL: http://127.0.0.1:7860
+      GRADIO_ANALYTICS_ENABLED: "False"
+      UI_ARTIFACT_DIR: ui-artifacts
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install application and browser-test dependencies
+        run: |
+          python -m pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt -r requirements-e2e.txt
+      - name: Install Chromium and system dependencies
+        run: python -m playwright install --with-deps chromium
+      - name: Start product UI
+        shell: bash
+        run: |
+          python product_app.py > /tmp/creator-studio-ui.log 2>&1 &
+          echo $! > /tmp/creator-studio-ui.pid
+          for i in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:7860/ >/dev/null; then
+              echo "Product UI is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/creator-studio-ui.log
+          exit 1
+      - name: Run browser product checks
+        run: pytest -q tests/test_ui_e2e.py
+      - name: Upload product screenshots
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ui-e2e-screenshots
+          path: ui-artifacts/
+          if-no-files-found: ignore
+          retention-days: 5
+      - name: Show server log on failure
+        if: failure()
+        run: cat /tmp/creator-studio-ui.log || true
+      - name: Stop product UI
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f /tmp/creator-studio-ui.pid ]]; then
+            kill "$(cat /tmp/creator-studio-ui.pid)" 2>/dev/null || true
+          fi

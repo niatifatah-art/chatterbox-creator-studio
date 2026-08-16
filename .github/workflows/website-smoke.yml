@@ -1,0 +1,56 @@
+name: website-smoke
+
+on:
+  pull_request:
+    paths:
+      - "website/**"
+      - ".github/workflows/website-smoke.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "website/**"
+      - ".github/workflows/website-smoke.yml"
+
+concurrency:
+  group: website-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Validate required files and copy
+        run: |
+          test -s website/index.html
+          test -s website/styles.css
+          test -s website/app.js
+          test -s website/vercel.json
+          grep -q "Local-first" website/index.html
+          grep -q "Windows release" website/index.html
+          grep -q "temporary product name" website/index.html
+          grep -q "prefers-reduced-motion" website/styles.css
+      - name: Serve static site and probe it
+        shell: bash
+        run: |
+          cd website
+          python -m http.server 4173 --bind 127.0.0.1 >/tmp/website.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          for i in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:4173/ >/tmp/index.html; then
+              grep -q "Creator Studio" /tmp/index.html
+              curl --fail --silent http://127.0.0.1:4173/styles.css >/dev/null
+              curl --fail --silent http://127.0.0.1:4173/app.js >/dev/null
+              echo "Static website responded successfully"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/website.log
+          exit 1

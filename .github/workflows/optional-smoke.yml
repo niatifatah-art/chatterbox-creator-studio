@@ -12,7 +12,6 @@ on:
   push:
     branches:
       - main
-      - dev/v1.1-product-experience
     paths:
       - "studio/**"
       - "requirements.txt"
@@ -27,8 +26,8 @@ jobs:
     env:
       HF_HOME: /tmp/huggingface
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install application and optional helpers
@@ -39,7 +38,7 @@ jobs:
         run: PYTHONPATH=. python scripts/smoke_optional.py --voice /tmp/reference.wav --output-dir optional-smoke-output
       - name: Upload optional smoke output
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: optional-helper-smoke
           path: optional-smoke-output/
