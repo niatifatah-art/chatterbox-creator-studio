@@ -118,7 +118,12 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.self_test:
-        return self_test()
+        # Gradio/uvicorn may create helper threads during startup. A normal SystemExit
+        # can wait for those threads even after the HTTP probe succeeds, which makes a
+        # packaged CI self-test look hung. Force process termination only in this hidden
+        # CI mode; normal desktop launches still shut down through pywebview.
+        code = self_test()
+        os._exit(code)
     return launch_desktop()
 
 
