@@ -10,6 +10,7 @@ on:
       - "assets/**"
       - "packaging/**"
       - "requirements.txt"
+      - "requirements-optional.txt"
       - "requirements-desktop.txt"
       - ".github/workflows/windows-package.yml"
   workflow_dispatch:
@@ -31,11 +32,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install application and desktop packaging dependencies
-        run: python -m pip install --no-cache-dir -r requirements.txt -r requirements-desktop.txt
+      - name: Install application, speech tools, and desktop packaging dependencies
+        run: python -m pip install --no-cache-dir -r requirements.txt -r requirements-optional.txt -r requirements-desktop.txt
 
       - name: Import desktop and product entry points
-        run: python -c "import product_app, desktop_launcher; print('desktop imports ok')"
+        run: python -c "import product_app, desktop_launcher, faster_whisper; print('desktop imports ok')"
 
       - name: Build one-folder desktop application
         run: pyinstaller --noconfirm --clean --distpath dist --workpath build packaging/creator_studio.spec
