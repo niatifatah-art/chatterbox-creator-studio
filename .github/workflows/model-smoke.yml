@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install full application
@@ -69,8 +69,8 @@ jobs:
     env:
       HF_HOME: /tmp/huggingface
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install application
@@ -81,7 +81,7 @@ jobs:
         run: PYTHONPATH=. python scripts/smoke_models.py --model "${{ matrix.model }}" --voice /tmp/reference.wav --output-dir smoke-output
       - name: Upload smoke output
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: smoke-${{ matrix.model }}
           path: smoke-output/${{ matrix.model }}/
