@@ -3,7 +3,6 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 # SPECPATH is the directory containing this spec. The repository root is its parent.
-# Using parent.parent accidentally escaped the Actions checkout directory on Windows.
 root = Path(SPECPATH).parent.resolve()
 
 datas = [
@@ -14,10 +13,10 @@ datas = [
 binaries = []
 hiddenimports = []
 
-# These libraries carry templates, frontend assets, dynamic modules, or runtime model
-# code that static analysis cannot always see. Model weights are intentionally NOT
-# bundled; the product downloads only the models the user explicitly chooses.
-for package in ("gradio", "webview", "chatterbox"):
+# These libraries carry templates, frontend assets, dynamic modules, native binaries,
+# or runtime model code that static analysis cannot always see. Model weights are
+# intentionally NOT bundled; the product downloads only models the user chooses.
+for package in ("gradio", "webview", "chatterbox", "faster_whisper", "ctranslate2"):
     try:
         package_datas, package_binaries, package_hidden = collect_all(package)
         datas += package_datas
