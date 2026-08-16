@@ -68,10 +68,13 @@ def test_primary_shell_is_explicit_adaptive_and_calm():
         expect(page.get_by_role("button", name="Cancel", exact=True)).to_be_visible()
         page.get_by_role("button", name="Cancel", exact=True).click()
 
-        # Compare is an explicit opt-in selection. Missing models remain selectable so
-        # their state is understandable, but comparison never downloads them itself.
+        # Compare intentionally lives in a collapsed drawer so it does not dominate the
+        # normal Create screen. Open it before validating the explicit opt-in choices.
+        compare_panel = page.locator("#compare-panel")
         picker = page.locator("#compare-model-picker")
-        expect(picker).to_be_visible()
+        if not picker.is_visible():
+            compare_panel.locator("button").first.click()
+        expect(picker).to_be_visible(timeout=5_000)
         labels = " ".join(picker.locator("label").all_inner_texts())
         assert "Multilingual" in labels
         assert "Expressive" in labels
