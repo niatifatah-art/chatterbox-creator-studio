@@ -209,6 +209,13 @@
   justify-content: center;
 }
 
+/* Gradio's status tracker can briefly span output areas even for tiny state changes.
+   Keep its progress feedback visible, but never let it eat clicks meant for the app. */
+.gradio-container [data-testid="status-tracker"],
+.gradio-container [data-testid="status-tracker"] * {
+  pointer-events: none !important;
+}
+
 /* Media/upload surfaces should look like part of the product, not white embeds. */
 .gradio-container audio,
 .gradio-container [data-testid="waveform"],
