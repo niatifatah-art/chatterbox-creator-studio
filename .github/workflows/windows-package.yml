@@ -45,7 +45,11 @@ jobs:
         shell: pwsh
         run: |
           $exe = Resolve-Path "dist\CreatorStudio\CreatorStudio.exe"
-          $process = Start-Process -FilePath $exe -ArgumentList "--self-test" -PassThru -Wait
+          $process = Start-Process -FilePath $exe -ArgumentList "--self-test" -PassThru
+          if (-not $process.WaitForExit(180000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "Packaged application self-test exceeded 180 seconds."
+          }
           if ($process.ExitCode -ne 0) {
             throw "Packaged application self-test failed with exit code $($process.ExitCode)."
           }
