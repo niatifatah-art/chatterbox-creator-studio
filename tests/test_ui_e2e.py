@@ -66,8 +66,9 @@ def test_primary_shell_is_explicit_adaptive_and_calm():
         # A clean CI cache has no installed model. Generate must ask before a large
         # download rather than silently fetching files or sending users to a terminal.
         _button(page, "#generate-btn").click()
-        expect(page.get_by_role("button", name="Download & generate", exact=True)).to_be_visible(timeout=10_000)
-        expect(page.get_by_text("needs to be downloaded", exact=False)).to_be_visible()
+        expect(page.get_by_role("heading", name="Download Multilingual?", exact=True)).to_be_visible(timeout=10_000)
+        expect(page.get_by_text("Nothing downloads until you approve it.", exact=False)).to_be_visible()
+        expect(page.get_by_role("button", name="Download & generate", exact=True)).to_be_visible()
         expect(page.get_by_role("button", name="Cancel", exact=True)).to_be_visible()
         page.get_by_role("button", name="Cancel", exact=True).click()
 
