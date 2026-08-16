@@ -6,12 +6,22 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class TranscriptionSegment:
+    start: float
+    end: float
+    text: str
+
+    def as_dict(self) -> dict[str, float | str]:
+        return {"start": self.start, "end": self.end, "text": self.text}
+
+
+@dataclass(frozen=True)
 class TranscriptionResult:
     text: str
     language: str | None
     language_probability: float | None
     duration_seconds: float | None
-    segments: tuple[dict, ...]
+    segments: tuple[TranscriptionSegment, ...]
 
 
 @lru_cache(maxsize=4)
@@ -54,6 +64,12 @@ def transcribe_audio(
     mode: str = "Balanced",
     language_id: str | None = None,
     compute_preference: str = "auto",
+    # Compatibility aliases used by the existing product controller. Keeping these
+    # here avoids two subtly different Whisper paths while app.py is being separated
+    # from its legacy UI tree.
+    model_size: str | None = None,
+    language: str | None = None,
+    device: str | None = None,
 ) -> TranscriptionResult:
     path = Path(audio_path)
     if not path.exists():
@@ -61,18 +77,20 @@ def transcribe_audio(
     try:
         import faster_whisper  # noqa: F401
     except Exception as exc:
-        raise RuntimeError("Speech to Text needs the optional local speech tools. Install them from Settings once, then try again.") from exc
+        raise RuntimeError("Speech to Text needs the optional local speech tools. Install them from Transcribe, then try again.") from exc
 
-    model_size = {"Fast": "tiny", "Balanced": "base", "Best": "small"}.get(mode, "base")
-    device, compute_type = _resolve_device(compute_preference)
-    model = _load_model(model_size, device, compute_type)
+    selected_size = model_size or {"Fast": "tiny", "Balanced": "base", "Best": "small"}.get(mode, "base")
+    selected_language = language if language is not None else language_id
+    selected_compute = device if device is not None else compute_preference
+    resolved_device, compute_type = _resolve_device(selected_compute)
+    model = _load_model(selected_size, resolved_device, compute_type)
     segments_iter, info = model.transcribe(
         str(path),
-        language=language_id or None,
+        language=selected_language or None,
         vad_filter=True,
-        beam_size=5 if mode == "Best" else 3,
+        beam_size=5 if mode == "Best" or selected_size == "small" else 3,
     )
-    rows: list[dict] = []
+    rows: list[TranscriptionSegment] = []
     texts: list[str] = []
     for segment in segments_iter:
         text = (segment.text or "").strip()
@@ -80,13 +98,13 @@ def transcribe_audio(
             continue
         texts.append(text)
         rows.append(
-            {
-                "start": round(float(segment.start), 3),
-                "end": round(float(segment.end), 3),
-                "text": text,
-            }
+            TranscriptionSegment(
+                start=round(float(segment.start), 3),
+                end=round(float(segment.end), 3),
+                text=text,
+            )
         )
-    duration = rows[-1]["end"] if rows else None
+    duration = rows[-1].end if rows else None
     return TranscriptionResult(
         text=" ".join(texts),
         language=getattr(info, "language", None),
