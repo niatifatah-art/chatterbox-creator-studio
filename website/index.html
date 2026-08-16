@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#090a0d" />
+  <meta name="description" content="A calm local workspace for creating, comparing and managing AI voiceovers on your own computer." />
+  <title>Creator Studio — Local voice creation</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+
+  <header class="site-header shell">
+    <a class="brand" href="#top" aria-label="Creator Studio home">
+      <span class="brand-mark" aria-hidden="true">◌</span>
+      <span><strong>Creator Studio</strong><small>temporary product name</small></span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#experience">Experience</a>
+      <a href="#models">Models</a>
+      <a href="#privacy">Local-first</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <a class="quiet-button" href="https://github.com/niatifatah-art/chatterbox-creator-studio" rel="noreferrer">GitHub</a>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-copy reveal">
+        <span class="eyebrow"><i></i> Your voice workspace, on your computer</span>
+        <h1>Make the voice.<br /><span>Skip the technical mess.</span></h1>
+        <p class="hero-lede">Choose a voice, write what you want to hear, and generate. Models, hardware, exact pauses, comparison and local speech tools stay simple until you ask for more.</p>
+        <div class="hero-actions">
+          <a class="primary-button" href="https://github.com/niatifatah-art/chatterbox-creator-studio/releases" rel="noreferrer">
+            <span>Windows release</span><b>↗</b>
+          </a>
+          <a class="secondary-button" href="#experience">See how it works</a>
+        </div>
+        <p class="micro-copy">The consumer installer is being packaged now. Current development builds remain available on GitHub.</p>
+      </div>
+
+      <div class="product-frame reveal" data-delay="1" aria-label="Product interface preview">
+        <div class="frame-top">
+          <div class="mini-brand"><span>◌</span><b>Creator Studio</b></div>
+          <div class="frame-tabs"><button class="active">Create</button><button>Library</button><button>Tools</button><button>Models</button></div>
+          <span class="local-pill">● Local-first</span>
+        </div>
+        <div class="frame-body">
+          <div class="editor-panel">
+            <div class="label-row"><span>Script</span><small>Auto saved</small></div>
+            <div class="fake-editor">
+              <p>This is the part that should feel easy.</p>
+              <p class="muted-line">Your model, language and computer can be handled automatically.</p>
+              <span class="pause-token">pause · 0.5s</span>
+            </div>
+            <div class="quick-actions"><span>+ 0.25s</span><span>+ 0.5s</span><span>+ 1s</span></div>
+            <div class="generate-row"><button>Generate</button><button class="ghost">Compare</button></div>
+            <div class="result-card">
+              <div class="wave" aria-hidden="true"></div>
+              <div><strong>Ready</strong><small>Light · CPU · 5.2s</small></div>
+              <span class="play">▶</span>
+            </div>
+          </div>
+          <aside class="controls-panel">
+            <span class="section-label">Voice</span>
+            <div class="select-card"><span class="avatar">V</span><div><b>My voice</b><small>13.1 seconds</small></div><em>⌄</em></div>
+            <span class="section-label">Sound</span>
+            <div class="field"><small>Model</small><b>Auto</b><em>⌄</em></div>
+            <div class="field"><small>Language</small><b>Auto</b><em>⌄</em></div>
+            <div class="field"><small>Style</small><b>Creator</b><em>⌄</em></div>
+            <div class="auto-note"><span>✦</span><div><b>Smart defaults</b><small>Light · English · CPU</small></div></div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="trust-strip shell reveal" aria-label="Product principles">
+      <div><b>Local-first</b><span>voices and projects stay with you</span></div>
+      <div><b>No account</b><span>open the app and create</span></div>
+      <div><b>Explicit downloads</b><span>large models never appear by surprise</span></div>
+      <div><b>Optional complexity</b><span>expert controls are there when needed</span></div>
+    </section>
+
+    <section id="experience" class="section shell">
+      <div class="section-heading reveal">
+        <span class="eyebrow">Designed around the task</span>
+        <h2>A powerful tool that does not make you operate it like one.</h2>
+        <p>The normal path is intentionally short. Technical controls stay behind the experience instead of becoming the experience.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card large reveal">
+          <div class="feature-number">01</div>
+          <div class="feature-visual compare-visual">
+            <div class="compare-head"><b>Compare voices</b><span>2 selected</span></div>
+            <label class="model-choice selected"><i></i><div><b>Multilingual</b><small>Installed</small></div><span>✓</span></label>
+            <label class="model-choice"><i></i><div><b>Expressive</b><small>Install first · ≈ 4 GB</small></div></label>
+            <label class="model-choice selected"><i></i><div><b>Light</b><small>Installed</small></div><span>✓</span></label>
+          </div>
+          <div class="feature-copy"><h3>Compare only what you choose</h3><p>Select the models you actually want to hear. Results arrive one by one, and missing models are never downloaded without permission.</p></div>
+        </article>
+
+        <article class="feature-card reveal">
+          <div class="feature-number">02</div>
+          <div class="mini-window">
+            <span class="tiny-label">Model</span>
+            <b>Expressive</b>
+            <div class="hide-demo"><span>Language</span><del>English only</del></div>
+            <div class="smart-chip">Language hidden automatically</div>
+          </div>
+          <div class="feature-copy"><h3>Only show what matters</h3><p>An English-only model does not need a language selector. The interface adapts instead of leaving irrelevant controls in your way.</p></div>
+        </article>
+
+        <article class="feature-card reveal">
+          <div class="feature-number">03</div>
+          <div class="recipe-demo"><span>♡</span><div><b>Warm narrator</b><small>Voice + model + tuning + seed</small></div><button>Use</button></div>
+          <div class="feature-copy"><h3>Save the sound you love</h3><p>Keep a result as a reusable sound recipe instead of remembering a collection of technical sliders.</p></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="models" class="section shell">
+      <div class="section-heading reveal">
+        <span class="eyebrow">Model library</span>
+        <h2>Installed, available, understandable.</h2>
+        <p>Model files are managed from inside the product. Download, use, update or remove them explicitly.</p>
+      </div>
+      <div class="model-grid">
+        <article class="web-model-card reveal"><div class="model-icon multi">M</div><div><div class="card-title-row"><h3>Multilingual</h3><span class="ready">Installed</span></div><p>23 languages. The natural choice for Arabic and multilingual work.</p><div class="meta-row"><span>Multilingual</span><span>High quality</span></div></div></article>
+        <article class="web-model-card reveal"><div class="model-icon expressive">E</div><div><div class="card-title-row"><h3>Expressive</h3><span class="available">Available</span></div><p>Fast expressive English with speech expression tags.</p><div class="meta-row"><span>English</span><span>Expressive</span></div></div></article>
+        <article class="web-model-card reveal"><div class="model-icon light">L</div><div><div class="card-title-row"><h3>Light</h3><span class="ready">Installed</span></div><p>Lightweight local generation that remains useful on CPU-only computers.</p><div class="meta-row"><span>English</span><span>CPU friendly</span></div></div></article>
+      </div>
+    </section>
+
+    <section id="privacy" class="section shell privacy-section reveal">
+      <div class="privacy-orb" aria-hidden="true"><span>⌂</span></div>
+      <div><span class="eyebrow">Local by default</span><h2>Your recordings are not a signup form.</h2><p>Saved voices, projects and generated work live locally. Network access is for explicit model/dependency downloads and update checks, not an account requirement.</p></div>
+      <div class="privacy-points"><span>✓ No account required</span><span>✓ No Gradio analytics</span><span>✓ Offline mode</span><span>✓ Explicit model updates</span></div>
+    </section>
+
+    <section id="faq" class="section shell faq-section">
+      <div class="section-heading reveal"><span class="eyebrow">FAQ</span><h2>Keep the answers short too.</h2></div>
+      <div class="faq-list">
+        <details class="reveal"><summary>Do I need Python or Git?</summary><p>The development build currently uses them. The consumer Windows package is being prepared so normal users will install and open the app like any other program.</p></details>
+        <details class="reveal"><summary>Does it require a GPU?</summary><p>No. The product supports CPU generation and can use compatible GPU acceleration when the installed runtime can actually access it.</p></details>
+        <details class="reveal"><summary>Does it download every model?</summary><p>No. The app shows what is installed and what is available. Large model downloads only start after an explicit action.</p></details>
+        <details class="reveal"><summary>Who provides the current speech models?</summary><p>The current engine uses open-source Chatterbox models. Full attribution, source notices and license information are kept in the application's About section and repository notices.</p></details>
+      </div>
+    </section>
+
+    <section class="final-cta shell reveal">
+      <span class="eyebrow">Build locally. Create normally.</span>
+      <h2>The terminal should not be part of the creative workflow.</h2>
+      <p>The current product name and icon are placeholders while the final identity is being designed.</p>
+      <a class="primary-button" href="https://github.com/niatifatah-art/chatterbox-creator-studio" rel="noreferrer">Follow the build on GitHub <b>↗</b></a>
+    </section>
+  </main>
+
+  <footer class="site-footer shell">
+    <div><strong>Creator Studio</strong><span>Independent local voice workspace.</span></div>
+    <div class="footer-links"><a href="https://github.com/niatifatah-art/chatterbox-creator-studio/blob/main/NOTICE.md" rel="noreferrer">Credits</a><a href="https://github.com/niatifatah-art/chatterbox-creator-studio/blob/main/LICENSE" rel="noreferrer">License</a><a href="https://github.com/niatifatah-art/chatterbox-creator-studio" rel="noreferrer">GitHub</a></div>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
