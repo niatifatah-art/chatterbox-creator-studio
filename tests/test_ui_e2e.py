@@ -23,16 +23,23 @@ def _shot(page, name: str) -> None:
     page.screenshot(path=str(ARTIFACT_DIR / name), full_page=True)
 
 
-def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
+def _choose_dropdown(page, root_selector: str, label: str) -> None:
+    root = page.locator(root_selector)
+    root.click()
+    option = page.get_by_role("option", name=label, exact=True)
+    expect(option).to_be_visible(timeout=5_000)
+    option.click()
+
+
+def test_primary_shell_is_explicit_adaptive_and_calm():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
-        # Gradio keeps long-lived browser connections. Playwright explicitly
-        # discourages networkidle for readiness assertions; wait for the document,
-        # then assert the product surface we actually care about.
         page.goto(BASE_URL, wait_until="domcontentloaded")
         expect(page.locator("#product-nav")).to_be_visible(timeout=20_000)
 
+        # The common path stays compact: script, voice, model, language when useful,
+        # and one primary Generate action.
         expect(page.locator("#script-box textarea")).to_be_visible()
         expect(page.locator("#voice-picker")).to_be_visible()
         expect(page.locator("#model-picker")).to_be_visible()
@@ -40,16 +47,29 @@ def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
         expect(_button(page, "#generate-btn")).to_be_visible()
         _shot(page, "01-create.png")
 
-        # Pause shortcuts are actions, not mysterious persistent modes. They insert
-        # at the text caret rather than silently appending at the end of the script.
+        # Exact pauses are editor actions and insert at the caret.
         script = page.locator("#script-box textarea")
         script.fill("Hello world")
         script.evaluate("el => { el.focus(); el.setSelectionRange(5, 5); }")
-        page.get_by_role("button", name="+ 0.5s pause", exact=True).click()
+        page.get_by_role("button", name="+ 0.5s", exact=True).click()
         expect(script).to_have_value("Hello [pause=0.5] world")
 
-        # Compare is an explicit selection UI, not a one-click command that silently
-        # downloads every compatible model. A clean CI cache has no installed models.
+        # Explicit English-only models do not show a meaningless language selector.
+        _choose_dropdown(page, "#model-picker", "Light")
+        expect(page.locator("#language-picker")).to_be_hidden(timeout=5_000)
+        _choose_dropdown(page, "#model-picker", "Multilingual")
+        expect(page.locator("#language-picker")).to_be_visible(timeout=5_000)
+
+        # A clean CI cache has no installed model. Generate must ask before a large
+        # download rather than silently fetching files or sending users to a terminal.
+        _button(page, "#generate-btn").click()
+        expect(page.get_by_role("button", name="Download & generate", exact=True)).to_be_visible(timeout=10_000)
+        expect(page.get_by_text("needs to be downloaded", exact=False)).to_be_visible()
+        expect(page.get_by_role("button", name="Cancel", exact=True)).to_be_visible()
+        page.get_by_role("button", name="Cancel", exact=True).click()
+
+        # Compare is an explicit opt-in selection. Missing models remain selectable so
+        # their state is understandable, but comparison never downloads them itself.
         picker = page.locator("#compare-model-picker")
         expect(picker).to_be_visible()
         labels = " ".join(picker.locator("label").all_inner_texts())
@@ -58,10 +78,7 @@ def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
         assert "Light" in labels
         assert "Install first" in labels
         expect(_button(page, "#compare-btn")).to_be_disabled()
-        expect(page.locator("#compare-status")).to_contain_text("Nothing is downloaded")
 
-        # The selection itself remains visible and interactive even though Compare
-        # stays disabled until the missing models are intentionally installed.
         multilingual = picker.locator("label", has_text="Multilingual")
         light = picker.locator("label", has_text="Light")
         multilingual.click()
@@ -72,19 +89,18 @@ def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
         expect(_button(page, "#compare-btn")).to_be_disabled()
         _shot(page, "02-compare-selected.png")
 
-        # Models use a persistent selected state rather than an invisible dropdown
-        # choice, and changing the choice visibly updates the checked control.
+        # Models are a small library: searchable and card-owned actions instead of a
+        # detached technical selector.
         page.get_by_role("tab", name="Models", exact=True).click()
-        expect(page.locator("#model-action-picker")).to_be_visible()
-        assert page.locator("#model-action-picker input:checked").count() == 1
-        expressive = page.locator("#model-action-picker label", has_text="Expressive")
-        expressive.click()
-        expect(expressive.locator("input")).to_be_checked()
-        expect(page.get_by_text("Models change only when", exact=False)).to_be_visible()
+        expect(page.get_by_label("Search models", exact=True)).to_be_visible()
+        expect(page.get_by_text("Install only what you want", exact=False)).to_be_visible()
+        expect(page.get_by_text("23 languages", exact=False)).to_be_visible()
+        expect(page.get_by_text("Fast expressive English", exact=False)).to_be_visible()
+        expect(page.get_by_text("CPU-only computers", exact=False)).to_be_visible()
+        assert page.get_by_role("button", name="Download", exact=True).count() >= 1
         _shot(page, "03-models.png")
 
-        # Speech-to-text setup is available where Transcribe lives; users are not
-        # forced to hunt through Expert settings just to enable the tool.
+        # Speech-to-text setup is available exactly where Transcribe lives.
         page.get_by_role("tab", name="Tools", exact=True).click()
         page.get_by_role("tab", name="Transcribe", exact=True).click()
         expect(_button(page, "#transcribe-btn")).to_be_visible()
