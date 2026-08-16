@@ -158,19 +158,23 @@ def script_looks_arabic(text: str) -> bool:
 
 
 def resolve_language(language_ui: str | None, script: str) -> str:
+    detected = detect_script_language(script)
     if language_ui and language_ui != "Auto":
+        # English is the value left behind when an English-only model hides the language
+        # control. If the script is clearly supported non-English text, do not let that
+        # stale hidden value force Multilingual to synthesize with the wrong language id.
+        if language_ui == "English" and detected and detected != "English":
+            return detected
         return language_ui
-    return detect_script_language(script) or "English"
+    return detected or "English"
 
 
 def _routing_language(language_ui: str | None, script: str) -> str:
     """Return the safest language for model routing/compatibility decisions.
 
     The visible language control can legitimately be stale or hidden after switching
-    models. Obvious script evidence therefore wins for *routing* so Arabic, Russian,
-    Spanish, etc. can never be sent to an English-only model by accident. Generation
-    language itself still uses resolve_language(), preserving explicit Multilingual
-    language choices.
+    models. Obvious script evidence therefore wins for routing so Arabic, Russian,
+    Spanish, etc. can never be sent to an English-only model by accident.
     """
     detected = detect_script_language(script)
     if detected and detected != "English":
