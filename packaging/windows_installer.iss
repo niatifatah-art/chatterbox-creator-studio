@@ -1,5 +1,5 @@
 #define MyAppName "Creator Studio"
-#define MyAppVersion "0.1.0-preview"
+#define MyAppVersion "1.1.1-preview"
 #define MyAppExeName "CreatorStudio.exe"
 
 [Setup]
@@ -20,7 +20,7 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName}
-VersionInfoVersion=0.1.0.0
+VersionInfoVersion=1.1.1.0
 VersionInfoDescription=Local voice creation workspace
 VersionInfoProductName={#MyAppName}
 
