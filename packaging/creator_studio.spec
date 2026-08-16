@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 # SPECPATH is the directory containing this spec. The repository root is its parent.
 root = Path(SPECPATH).parent.resolve()
@@ -12,6 +12,12 @@ datas = [
 ]
 binaries = []
 hiddenimports = []
+
+# safehttpx reads version.txt during import. Static module discovery does not include
+# that package data automatically, so mirror the package layout in the frozen bundle.
+# PyInstaller's documented collect_data_files helper is intentionally used instead of
+# hard-coding a site-packages path.
+datas += collect_data_files("safehttpx")
 
 # These libraries carry templates, frontend assets, dynamic modules, native binaries,
 # or runtime model code that static analysis cannot always see. Model weights are
