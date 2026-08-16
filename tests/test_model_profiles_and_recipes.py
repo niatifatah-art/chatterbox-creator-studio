@@ -60,16 +60,37 @@ def test_recipe_store_round_trip_and_delete(tmp_path):
         model_id="multilingual-v3",
         language="English",
         style="Creator",
-        speech_speed=1.0,
-        seed=42,
-        generation={"temperature": 0.8, "cfg_weight": 0.3},
-        finishing={"trim_silence": False},
+        speech_speed=0.97,
+        seed=424242,
+        generation={
+            "exaggeration": 0.65,
+            "cfg_weight": 0.3,
+            "temperature": 0.81,
+            "repetition_penalty": 1.25,
+            "min_p": 0.04,
+            "top_p": 0.96,
+            "top_k": 900,
+        },
+        finishing={"trim_silence": True, "peak_normalize": False, "fade_ms": 35},
     )
     loaded = store.get(saved.id)
     assert loaded is not None
     assert loaded.name == "My favorite"
     assert loaded.voice == "young_native"
     assert loaded.model_id == "multilingual-v3"
-    assert loaded.generation["cfg_weight"] == 0.3
+    assert loaded.language == "English"
+    assert loaded.style == "Creator"
+    assert loaded.speech_speed == 0.97
+    assert loaded.seed == 424242
+    assert loaded.generation == {
+        "exaggeration": 0.65,
+        "cfg_weight": 0.3,
+        "temperature": 0.81,
+        "repetition_penalty": 1.25,
+        "min_p": 0.04,
+        "top_p": 0.96,
+        "top_k": 900,
+    }
+    assert loaded.finishing == {"trim_silence": True, "peak_normalize": False, "fade_ms": 35}
     assert store.delete(saved.id) is True
     assert store.get(saved.id) is None
