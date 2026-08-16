@@ -1,0 +1,68 @@
+name: windows-ui-smoke
+
+on:
+  pull_request:
+    paths:
+      - "product_app.py"
+      - "app.py"
+      - "assets/**"
+      - "studio/**"
+      - "scripts/start_windows.bat"
+      - "requirements.txt"
+      - ".github/workflows/windows-ui-smoke.yml"
+  push:
+    branches:
+      - main
+      - fix/v1.1.1-ux-validation
+    paths:
+      - "product_app.py"
+      - "app.py"
+      - "assets/**"
+      - "studio/**"
+      - "scripts/start_windows.bat"
+      - "requirements.txt"
+      - ".github/workflows/windows-ui-smoke.yml"
+
+jobs:
+  product-shell:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install application
+        run: python -m pip install --no-cache-dir -r requirements.txt
+      - name: Import product application
+        run: python -c "import product_app; print('Windows product app import ok')"
+      - name: Start and probe local product server
+        shell: pwsh
+        run: |
+          $stdout = Join-Path $env:RUNNER_TEMP "creator-studio.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "creator-studio.stderr.log"
+          $proc = Start-Process python -ArgumentList "product_app.py" -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:7860/" -UseBasicParsing -TimeoutSec 3
+                if ($response.StatusCode -eq 200 -and $response.Content.Length -gt 0) {
+                  $ready = $true
+                  break
+                }
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $ready) {
+              Get-Content $stdout -ErrorAction SilentlyContinue
+              Get-Content $stderr -ErrorAction SilentlyContinue
+              throw "Product UI did not become ready on Windows."
+            }
+            Write-Host "Windows product UI responded successfully"
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
