@@ -13,10 +13,35 @@ import gradio as gr
 # of the normal creator workflow.
 import app as core
 from studio.model_profiles import capabilities_for, language_control_needed, profile_for
+from studio.paths import resolve_storage_root
 from studio.recipes import RecipeStore
 
 ROOT = Path(__file__).resolve().parent
 UI_CSS_PATH = ROOT / "assets" / "product_v111.css"
+
+# Source/development runs deliberately keep the existing repo-local data layout. Frozen
+# desktop builds redirect all creator-owned state to the OS user-data directory before
+# the supported product shell reads settings or creates any new voice/project/output.
+# app.py is imported first only to reuse the stable controller functions; rebinding its
+# stores here keeps those functions working without a risky controller rewrite.
+STORAGE_ROOT = resolve_storage_root(core.ROOT)
+core.STORAGE_ROOT = STORAGE_ROOT
+if STORAGE_ROOT != core.ROOT:
+    core.DATA_DIR = STORAGE_ROOT / "data"
+    core.VOICE_DIR = core.DATA_DIR / "voices"
+    core.PROJECT_DIR = core.DATA_DIR / "projects"
+    core.OUTPUT_DIR = STORAGE_ROOT / "outputs"
+    core.BATCH_DIR = core.OUTPUT_DIR / "batches"
+    for directory in (core.VOICE_DIR, core.PROJECT_DIR, core.OUTPUT_DIR, core.BATCH_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+    core.voices = core.VoiceLibrary(core.VOICE_DIR)
+    core.projects = core.ProjectStore(core.PROJECT_DIR)
+    core.settings_store = core.SettingsStore(core.DATA_DIR / "settings.json")
+    core.settings = core.settings_store.load()
+    core.model_manager = core.LocalModelManager(core.DATA_DIR / "model_state.json")
+    core.engine = core.ChatterboxEngine(core.OUTPUT_DIR)
+    core.set_hf_offline(bool(core.settings.get("offline_mode", False)))
+
 RECIPES = RecipeStore(core.DATA_DIR / "recipes.json")
 
 MODEL_IDS = tuple(core.MODEL_SPECS)
@@ -261,6 +286,25 @@ def update_sound_controls(model_ui, language_ui, script, compute_preference, sty
     )
 
 
+def update_sound_visibility(model_ui, language_ui, script, compute_preference):
+    """Refresh model-dependent visibility without overwriting a saved sound recipe."""
+    try:
+        model_id, _ = _resolved_model(model_ui, _effective_language(model_ui, language_ui), script, compute_preference)
+    except Exception:
+        model_id = core.model_id_from_ui_name(model_ui) or "multilingual-v3"
+    caps = capabilities_for(model_id)
+    explicit_id = core.model_id_from_ui_name(model_ui)
+    show_language = language_control_needed(explicit_id)
+    effective_language = language_ui if show_language else "English"
+    return (
+        gr.update(visible=show_language, value=effective_language),
+        gr.update(visible=caps.exaggeration or caps.cfg_weight or caps.min_p),
+        gr.update(visible=caps.top_k),
+        gr.update(visible=caps.expressive_tags),
+        core._model_state_line(model_ui, effective_language, script, compute_preference),
+    )
+
+
 def update_batch_language(model_ui: str, current_language: str):
     model_id = core.model_id_from_ui_name(model_ui)
     show = language_control_needed(model_id)
@@ -362,8 +406,9 @@ def delete_recipe(recipe_id: str | None):
 def apply_recipe(recipe_id: str | None):
     recipe = RECIPES.get(recipe_id)
     if recipe is None:
-        return (gr.update(),) * 12 + ("Choose a saved sound first.",)
+        return (gr.update(),) * 17 + ("Choose a saved sound first.",)
     generation = recipe.generation or {}
+    finishing = recipe.finishing or {}
     return (
         gr.update(value=recipe.voice),
         gr.update(value=_model_ui_for_id(recipe.model_id)),
@@ -377,7 +422,12 @@ def apply_recipe(recipe_id: str | None):
         gr.update(value=float(generation.get("min_p", 0.05))),
         gr.update(value=float(generation.get("top_p", 1.0))),
         gr.update(value=int(generation.get("top_k", 1000))),
-        f"✅ Loaded **{recipe.name}**. You can still change anything before generating.",
+        gr.update(value=int(recipe.seed)),
+        gr.update(value=bool(finishing.get("trim_silence", False))),
+        gr.update(value=bool(finishing.get("peak_normalize", False))),
+        gr.update(value=int(finishing.get("fade_ms", 0))),
+        gr.update(value=False),
+        f"✅ Loaded **{recipe.name}** exactly. Recommended tuning is off so the saved recipe is not overwritten; you can still change anything before generating.",
     )
 
 
@@ -507,6 +557,40 @@ def cancel_model_prompt():
     return gr.update(visible=False), "", None
 
 
+def run_batch_product(
+    state, voice_name, model_ui, language_ui, style, speech_speed,
+    compute_preference, offline_mode, recommended_tuning,
+    exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+    raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+    normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+    collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+    whisper_model, verification_threshold, auto_retries, best_of_n,
+    fit_timing, max_stretch, progress=gr.Progress(),
+):
+    if not state:
+        raise gr.Error("Add a batch file first.")
+    representative = " ".join(str(item.get("text") or "") for item in state[:8])
+    effective_language_ui = _effective_language(model_ui, language_ui)
+    try:
+        model_id, _ = _resolved_model(model_ui, effective_language_ui, representative, compute_preference)
+        ex, cfg, temp, rep, mp, tp, tk, speed = _effective_tuning(
+            model_id, style, recommended_tuning, exaggeration, cfg_weight, temperature,
+            repetition_penalty, min_p, top_p, top_k, speech_speed,
+        )
+        return core.run_batch_ui(
+            state, voice_name, model_ui, effective_language_ui, speed, compute_preference,
+            offline_mode, False, ex, cfg, temp, rep, mp, tp, tk,
+            raw_mode, smart_chunking, max_chars, chunk_gap_seconds, seed,
+            normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls,
+            collapse_punctuation, normalize_whitespace, quality_check, verify_stt,
+            whisper_model, verification_threshold, auto_retries, best_of_n,
+            fit_timing, max_stretch, progress,
+        )
+    except Exception as exc:
+        progress(None)
+        raise gr.Error(core._friendly_error(exc)) from exc
+
+
 def _compare_outputs(results: dict[str, str | None], recipes: dict[str, dict | None], status: str):
     values: list[Any] = []
     for model_id in ("multilingual-v3", "turbo", "nano"):
@@ -620,11 +704,11 @@ def _compare_idle(selected):
 
 
 def _generate_busy():
-    return gr.update(value="Generating…", interactive=False)
+    return gr.update(value="Generating…", interactive=False), gr.update(visible=True)
 
 
 def _generate_idle():
-    return gr.update(value="Generate", interactive=True)
+    return gr.update(value="Generate", interactive=True), gr.update(visible=False)
 
 
 def install_speech_tools_inline(progress=gr.Progress()):
@@ -731,6 +815,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
 
                     with gr.Row(elem_classes="primary-actions"):
                         generate_btn = gr.Button("Generate", variant="primary", size="lg", elem_id="generate-btn")
+                        generate_cancel = gr.Button("Stop", variant="secondary", size="lg", visible=False, elem_id="generate-cancel")
                         compare_btn = gr.Button("Compare", variant="secondary", size="lg", elem_id="compare-btn", interactive=compare_enabled)
                         compare_cancel = gr.Button("Stop", variant="secondary", size="lg", visible=False, elem_id="compare-cancel")
 
@@ -1014,6 +1099,7 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
         language_ui, exaggeration, cfg_weight, temperature, repetition_penalty, min_p,
         top_p, top_k, speech_speed, multilingual_expert_group, top_k_group, tag_group, model_state,
     ]
+    sound_visibility_outputs = [language_ui, multilingual_expert_group, top_k_group, tag_group, model_state]
     for component in (model_ui, style):
         component.change(
             update_sound_controls,
@@ -1056,11 +1142,19 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
         project_takes, model_state, download_confirm, download_confirm_text, pending_model,
         save_result_btn, last_recipe_state,
     ]
-    generate_start = generate_btn.click(_generate_busy, outputs=generate_btn, queue=False)
+    generate_start = generate_btn.click(_generate_busy, outputs=[generate_btn, generate_cancel], queue=False)
     generate_event = generate_start.then(generate_product, inputs=generation_inputs, outputs=generation_outputs, show_progress="minimal")
-    generate_event.then(_generate_idle, outputs=generate_btn, queue=False)
-    download_generate_btn.click(download_and_generate_product, inputs=[pending_model, *generation_inputs], outputs=generation_outputs, show_progress="minimal")
+    generate_event.then(_generate_idle, outputs=[generate_btn, generate_cancel], queue=False)
+    download_start = download_generate_btn.click(_generate_busy, outputs=[generate_btn, generate_cancel], queue=False)
+    download_event = download_start.then(download_and_generate_product, inputs=[pending_model, *generation_inputs], outputs=generation_outputs, show_progress="minimal")
+    download_event.then(_generate_idle, outputs=[generate_btn, generate_cancel], queue=False)
     download_cancel_btn.click(cancel_model_prompt, outputs=[download_confirm, download_confirm_text, pending_model], queue=False)
+    generate_cancel.click(
+        lambda: "Stopping generation…",
+        outputs=create_status,
+        cancels=[generate_event, download_event],
+        queue=False,
+    ).then(_generate_idle, outputs=[generate_btn, generate_cancel], queue=False)
 
     save_result_btn.click(save_recipe, inputs=[last_recipe_state, recipe_name], outputs=[recipe_status, saved_recipe], queue=False)
     compare_v3_save.click(save_recipe, inputs=[compare_recipe_v3, recipe_name], outputs=[recipe_status, saved_recipe], queue=False)
@@ -1068,9 +1162,18 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     compare_nano_save.click(save_recipe, inputs=[compare_recipe_nano, recipe_name], outputs=[recipe_status, saved_recipe], queue=False)
     apply_recipe_btn.click(
         apply_recipe, inputs=saved_recipe,
-        outputs=[voice_dropdown, model_ui, language_ui, style, speech_speed, exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k, saved_recipe_status],
+        outputs=[
+            voice_dropdown, model_ui, language_ui, style, speech_speed,
+            exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
+            seed, trim_silence, peak_normalize, fade_ms, recommended_tuning, saved_recipe_status,
+        ],
         queue=False,
-    ).then(update_sound_controls, inputs=[model_ui, language_ui, script, compute_state, style], outputs=sound_control_outputs, queue=False)
+    ).then(
+        update_sound_visibility,
+        inputs=[model_ui, language_ui, script, compute_state],
+        outputs=sound_visibility_outputs,
+        queue=False,
+    )
     delete_recipe_btn.click(delete_recipe, inputs=saved_recipe, outputs=[saved_recipe, saved_recipe_status], queue=False)
 
     for component in (language_ui, script):
@@ -1116,14 +1219,15 @@ with gr.Blocks(title="Creator Studio", analytics_enabled=False) as demo:
     batch_model.change(update_batch_language, inputs=[batch_model, batch_language], outputs=batch_language, queue=False)
     batch_parse.click(core.preview_batch_file, inputs=batch_file, outputs=[batch_state, batch_table, batch_status], queue=False)
     batch_inputs = [
-        batch_state, batch_voice, batch_model, batch_language, speech_speed, compute_state, offline_state, no_auto_download,
+        batch_state, batch_voice, batch_model, batch_language, style, speech_speed,
+        compute_state, offline_state, recommended_tuning,
         exaggeration, cfg_weight, temperature, repetition_penalty, min_p, top_p, top_k,
         raw_mode, smart_chunking, max_chars, chunk_gap, seed,
         normalize_unicode, normalize_punctuation, normalize_numbers, replace_urls, collapse_punctuation, normalize_whitespace,
         quality_check, verify_stt, whisper_model, verification_threshold, auto_retries, best_of_n,
         batch_fit, batch_stretch,
     ]
-    batch_run.click(core.run_batch_ui, inputs=batch_inputs, outputs=[batch_manifest, batch_output_dir, batch_status], show_progress="minimal")
+    batch_run.click(run_batch_product, inputs=batch_inputs, outputs=[batch_manifest, batch_output_dir, batch_status], show_progress="minimal")
 
     stt_btn.click(core.transcribe_ui, inputs=[stt_audio, stt_quality, stt_language, compute_state], outputs=[stt_text, stt_segments, stt_status], show_progress="minimal")
     stt_install_btn.click(install_speech_tools_inline, outputs=[stt_status, stt_install_btn], show_progress="minimal")
