@@ -34,7 +34,15 @@ jobs:
       - name: Install application
         run: python -m pip install --no-cache-dir -r requirements.txt
       - name: Import product application
-        run: python -c "import product_app; print('Windows product app import ok')"
+        shell: pwsh
+        run: |
+          $trace = Join-Path $env:RUNNER_TEMP "creator-studio-import.txt"
+          python -c "import product_app; print('Windows product app import ok')" 2>&1 | Tee-Object -FilePath $trace
+          if ($LASTEXITCODE -ne 0) {
+            $message = ((Get-Content $trace -Raw) -replace '%','%25' -replace "`r?`n",'%0A')
+            Write-Host "::error title=Product application import failed::$message"
+            exit $LASTEXITCODE
+          }
       - name: Start and probe local product server
         shell: pwsh
         run: |
