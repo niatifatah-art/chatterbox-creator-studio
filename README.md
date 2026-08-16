@@ -4,18 +4,22 @@ A calm, local workspace for creating and managing AI voiceovers.
 
 The app follows one rule: **the common path stays simple, while technical control remains available when you intentionally look for it.** Choose a voice, write a script, and generate. Auto can choose a suitable model, language hint, and compute backend; deeper controls stay in Models and Settings → Expert.
 
-> The current product name is temporary while the product and visual identity are still being finalized.
+> The current product name and icon are temporary while the final identity is still being designed.
 
 ## What you can do
 
 - **Create voiceovers** from a saved, uploaded, or newly recorded reference voice.
 - Use **Auto** for sensible model, language, and compute choices.
-- **Compare only the models you select.** The comparison UI shows which models are ready and never downloads a missing model just because you pressed Compare.
-- Add exact digital pauses such as `[pause=0.5]`; the quick pause controls insert them at the current caret position.
-- Keep **projects, takes, voices, and generation history** locally.
+- Hide irrelevant controls automatically: explicit English-only models do not show a redundant language selector.
+- **Compare only the installed models you select.** Results arrive model-by-model and the comparison can be stopped.
+- Approve a missing model with **Download & generate** instead of getting a surprise multi-gigabyte download.
+- Browse a friendly **Models library** with search, Installed/Available filters, and card-level Download / Use / Update / Remove actions.
+- Use model-specific recommended tuning: Multilingual, Expressive, and Light do not pretend that one technical recipe is ideal for every engine.
+- Add exact digital pauses such as `[pause=0.5]` at the current text caret; supported expression tags are shown only for models that use them.
+- **Save a sound you like** as a local recipe containing the voice, model, style, tuning, seed, speed, and finishing choices, then reuse it later.
+- Keep **projects, takes, voices, saved sound recipes, and generation history** locally.
 - Use **Batch & subtitles** with TXT, Markdown, CSV, JSON, SRT, and VTT.
-- Use **Transcribe** for local speech-to-text; its optional speech tools can be installed from the Transcribe screen itself.
-- Explicitly install, load, update, unload, and remove speech models from **Models**.
+- Use **Transcribe** for local speech-to-text; optional speech tools can be installed from the Transcribe screen itself.
 - Keep an installed model snapshot pinned until **you explicitly choose to update it**.
 - Let **Performance: Auto** use CUDA, Apple MPS, or CPU when that backend is actually available to the installed runtime.
 - Keep sampling, preprocessing, verification, and diagnostics under **Settings → Expert**.
@@ -30,13 +34,13 @@ The user-facing names are intentionally simple:
 | **Expressive** | Chatterbox Turbo | English | expressive English and paralinguistic tags |
 | **Light** | Chatterbox Nano | English | CPU-friendly local generation |
 
-The product language and model-management architecture are kept separate so the interface does not have to be tied to one model family forever. The current implementation focuses only on these three models.
+The product language and model-management architecture are kept separate so the interface does not have to be tied to one model family forever. The current implementation intentionally focuses only on these three models.
 
 ## Install for development / current local testing
 
 ### Windows 10 / 11
 
-Requirements today:
+Requirements for the development path:
 
 - Python 3.11 64-bit
 - Git (required by the pinned upstream dependency)
@@ -63,7 +67,24 @@ bash scripts/start_linux.sh
 
 The start scripts launch `product_app.py`, the current product shell. `app.py` still contains the proven v1.1 controller and legacy component tree while the UI is being separated from the stable generation/storage core.
 
-The scripts remain the **developer/testing distribution path**. A consumer installer that bundles the required runtime is a separate packaging milestone; normal users should eventually never need Python, Git, Hugging Face cache paths, or terminal commands.
+## Windows desktop packaging preview
+
+A separate packaging pipeline now builds the product as a normal Windows desktop application instead of asking end users to install Python or launch a terminal.
+
+The preview path is:
+
+```text
+desktop_launcher.py
+→ native pywebview window
+→ local product server on 127.0.0.1
+→ PyInstaller one-folder bundle
+→ Inno Setup installer
+→ CreatorStudio-Setup.exe
+```
+
+Model weights are **not** bundled into the installer. The installed app keeps the same explicit model-library behavior and downloads only models the user chooses.
+
+The GitHub Actions workflow `.github/workflows/windows-package.yml` builds the Windows bundle, starts the packaged executable in a self-test mode, probes its local HTTP server, builds the installer, verifies the artifact, and uploads a short-lived preview artifact. The final public installer, versioning, signing, product name, and custom icon remain release/branding milestones rather than being faked in advance.
 
 ## First use
 
@@ -72,15 +93,17 @@ The scripts remain the **developer/testing distribution path**. A consumer insta
 3. Leave **Model = Auto** and **Language = Auto** unless you want an override.
 4. Write the script.
 5. Press **Generate**.
-6. For comparison, tick the ready models you want and press **Compare selected**.
+6. If the needed model is missing, review the model and approximate download size, then choose **Download & generate** or **Cancel**.
+7. Open **Compare voices** only when you want comparison, select the installed models you actually want to hear, and press **Compare**.
+8. When a result is exactly what you wanted, press **♡ Save sound** and give the recipe a human name.
 
-A missing model is not silently fetched by Generate, Batch, or Compare. Open **Models** and press **Install** when you actually want it downloaded.
+Generate never begins a missing-model download until you approve it. Batch and Compare never download missing speech models implicitly.
 
 ## Speech to Text
 
 Transcription is optional. Open **Tools → Transcribe**. If the local speech tools are missing, the same screen offers **Install speech tools**. Whisper model sizes and transcript-similarity controls remain under Expert unless you deliberately want them.
 
-Manual installation is still available:
+Manual installation remains available for development:
 
 ```bash
 python -m pip install -r requirements-optional.txt
@@ -92,6 +115,7 @@ python -m pip install -r requirements-optional.txt
 data/
 ├── model_state.json   # exact model snapshots selected by the app
 ├── settings.json
+├── recipes.json       # reusable saved-sound recipes
 ├── voices/
 └── projects/
 
@@ -99,17 +123,29 @@ outputs/
 └── ...
 ```
 
-Deleting a speech model from Models does **not** delete voices or projects.
+Deleting a speech model from Models does **not** delete voices, projects, or saved sound recipes.
+
+## Starter voices
+
+The voice library is prepared for future starter packs, but this repository deliberately does **not** redistribute random demo/reference recordings. A starter voice will only be bundled or offered when its redistribution and intended use rights are clear enough for the project to ship it responsibly.
+
+## Website
+
+The static product site lives in [`website/`](website/). It is intentionally lightweight: HTML, CSS, and a small progressive-enhancement script. The landing page follows the same product language as the app, clearly labels the current name as temporary, and does not pretend that the consumer installer is publicly released before the packaging pipeline is certified.
+
+`website/vercel.json` contains the static deployment configuration and basic response headers. The site has its own GitHub Actions smoke test before it is connected to a production Vercel project.
 
 ## Privacy and local behavior
 
-The normal app binds to `127.0.0.1` and Gradio analytics are disabled. Saved voices, projects, settings, generated WAVs, and metadata remain local. Network access is used only for explicit model/dependency installs or update checks. **Offline mode** blocks model downloads and checks.
+The normal app binds to `127.0.0.1` and Gradio analytics are disabled. Saved voices, projects, recipes, settings, generated WAVs, and metadata remain local. Network access is used for explicit model/dependency installs and update checks. **Offline mode** blocks model downloads and checks.
 
 Only clone voices you have the right and consent to use.
 
 ## Open-source credits and independence
 
 Creator Studio is an independent community application, not an official Resemble AI product. The current speech engines use the open-source Chatterbox model family and preserve the upstream watermarking behavior. Full attribution and license details live in [`NOTICE.md`](NOTICE.md), [`LICENSE`](LICENSE), and the pinned dependency in [`requirements.txt`](requirements.txt).
+
+The normal creation surface intentionally keeps these credits out of the way; they remain available in About, the repository notices, and the website footer rather than being repeated throughout the product.
 
 ## Tests
 
@@ -123,9 +159,12 @@ pytest -q
 CI also runs:
 
 - Ubuntu and Windows core tests.
-- A real product UI import/server smoke.
-- Chromium end-to-end checks with Playwright for the primary interaction states.
+- Model-specific profile and saved-recipe tests.
+- A Windows product UI import/start/HTTP smoke.
+- Chromium end-to-end checks for adaptive language controls, explicit download confirmation, caret pause insertion, Compare selection, the model library, and Transcribe setup.
 - Real CPU generation smokes for Multilingual, Expressive, and Light.
-- An optional Faster-Whisper helper smoke.
+- An optional Faster-Whisper / preprocessing / audio smoke.
+- A static website smoke.
+- A Windows desktop-package build and packaged executable self-test before producing an installer artifact.
 
-The browser workflow installs only Chromium for this validation pass. See `requirements-e2e.txt` and `.github/workflows/ui-e2e.yml`.
+Browser validation captures product screenshots for visual review as CI artifacts.
