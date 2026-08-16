@@ -1,0 +1,62 @@
+name: oneoff-product-patch
+
+on:
+  push:
+    branches:
+      - fix/v1.1.1-ux-validation
+    paths:
+      - ".github/workflows/oneoff-product-patch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/v1.1.1-ux-validation
+      - name: Apply guarded product polish patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("product_app.py")
+          text = path.read_text(encoding="utf-8")
+
+          speed_old = """            profile.top_p,\n            profile.top_k,\n            profile.speech_speed,\n"""
+          speed_new = """            profile.top_p,\n            profile.top_k,\n            float(speech_speed),\n"""
+          if text.count(speed_old) != 1:
+              raise SystemExit(f"speed patch anchor count was {text.count(speed_old)}, expected 1")
+          text = text.replace(speed_old, speed_new, 1)
+
+          initial_old = """def _initial_script() -> str:\n    if core.initial_project:\n        project = core.projects.load(core.initial_project)\n        if project and (project.get(\"script\") or \"\").strip():\n            return str(project.get(\"script\"))\n    return \"Type what you want to hear.\"\n"""
+          initial_new = """def _initial_script(project_id: str | None) -> str:\n    if project_id:\n        project = core.projects.load(project_id)\n        if project and (project.get(\"script\") or \"\").strip():\n            return str(project.get(\"script\"))\n    return \"Type what you want to hear.\"\n"""
+          if text.count(initial_old) != 1:
+              raise SystemExit(f"initial-script patch anchor count was {text.count(initial_old)}, expected 1")
+          text = text.replace(initial_old, initial_new, 1)
+
+          call_old = "initial_script = _initial_script()"
+          call_new = "initial_script = _initial_script(initial_project)"
+          if text.count(call_old) != 1:
+              raise SystemExit(f"initial-script call anchor count was {text.count(call_old)}, expected 1")
+          text = text.replace(call_old, call_new, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+          python -m compileall -q product_app.py studio
+          git diff --check
+      - name: Commit guarded patch
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No patch changes were needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add product_app.py
+          git commit -m "fix: honor speed overrides and restore packaged project script"
+          git push origin HEAD:fix/v1.1.1-ux-validation
