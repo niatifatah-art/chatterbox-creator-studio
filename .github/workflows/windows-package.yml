@@ -13,6 +13,20 @@ on:
       - "requirements-optional.txt"
       - "requirements-desktop.txt"
       - ".github/workflows/windows-package.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "desktop_launcher.py"
+      - "product_app.py"
+      - "app.py"
+      - "studio/**"
+      - "assets/**"
+      - "packaging/**"
+      - "requirements.txt"
+      - "requirements-optional.txt"
+      - "requirements-desktop.txt"
+      - ".github/workflows/windows-package.yml"
   workflow_dispatch:
 
 concurrency:
