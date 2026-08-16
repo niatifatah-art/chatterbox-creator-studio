@@ -153,11 +153,27 @@
   transition: background .14s ease, border-color .14s ease, transform .14s ease !important;
 }
 
+/* Some Gradio builds keep a previous radio label's framework-selected styling for a
+   render tick after the value changes. Drive the visual state from the real input. */
+.choice-pills label:not(:has(input:checked)),
+#model-action-picker label:not(:has(input:checked)) {
+  background: rgba(255, 255, 255, .025) !important;
+  border-color: var(--app-border) !important;
+  box-shadow: none !important;
+}
+
 .choice-pills label:hover,
 #compare-model-picker label:hover,
 #model-action-picker label:hover {
   border-color: var(--app-border-strong) !important;
   background: rgba(255, 255, 255, .045) !important;
+}
+
+.choice-pills label:has(input:checked):hover,
+#compare-model-picker label:has(input:checked):hover,
+#model-action-picker label:has(input:checked):hover {
+  background: rgba(124, 140, 255, .19) !important;
+  border-color: rgba(154, 166, 255, .7) !important;
 }
 
 #compare-model-picker {
