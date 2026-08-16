@@ -24,11 +24,15 @@ def _shot(page, name: str) -> None:
 
 
 def _choose_dropdown(page, root_selector: str, label: str) -> None:
-    root = page.locator(root_selector)
-    root.click()
-    option = page.get_by_role("option", name=label, exact=True)
-    expect(option).to_be_visible(timeout=5_000)
-    option.click()
+    # Gradio 6 exposes the selected control as a listbox but its floating choice rows
+    # are not consistently role=option across browser builds. Keyboard selection uses
+    # the component's actual accessibility contract and is less coupled to DOM details.
+    listbox = page.locator(root_selector).get_by_role("listbox")
+    expect(listbox).to_be_visible()
+    listbox.click()
+    page.keyboard.type(label)
+    page.keyboard.press("Enter")
+    expect(listbox).to_contain_text(label, timeout=5_000)
 
 
 def test_primary_shell_is_explicit_adaptive_and_calm():
