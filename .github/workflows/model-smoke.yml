@@ -6,6 +6,8 @@ on:
     paths:
       - "studio/**"
       - "app.py"
+      - "product_app.py"
+      - "assets/**"
       - "requirements.txt"
       - "requirements-optional.txt"
       - "scripts/smoke_models.py"
@@ -13,10 +15,12 @@ on:
   push:
     branches:
       - main
-      - dev/v1.1-product-experience
+      - fix/v1.1.1-ux-validation
     paths:
       - "studio/**"
       - "app.py"
+      - "product_app.py"
+      - "assets/**"
       - "requirements.txt"
       - "requirements-optional.txt"
       - "scripts/smoke_models.py"
@@ -33,18 +37,18 @@ jobs:
           python-version: "3.11"
       - name: Install full application
         run: python -m pip install --no-cache-dir -r requirements.txt
-      - name: Import application
-        run: python -c "import app; print('app import ok')"
-      - name: Start local Gradio server and probe it
+      - name: Import product application
+        run: python -c "import product_app; print('product app import ok')"
+      - name: Start local product server and probe it
         shell: bash
         run: |
-          python app.py > /tmp/creator-studio.log 2>&1 &
+          python product_app.py > /tmp/creator-studio.log 2>&1 &
           APP_PID=$!
           trap 'kill $APP_PID 2>/dev/null || true' EXIT
           for i in {1..40}; do
             if curl --fail --silent --show-error http://127.0.0.1:7860/ >/tmp/studio.html; then
               test -s /tmp/studio.html
-              echo "UI server responded successfully"
+              echo "Product UI server responded successfully"
               exit 0
             fi
             sleep 1
