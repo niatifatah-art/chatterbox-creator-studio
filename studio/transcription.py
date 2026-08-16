@@ -5,13 +5,6 @@ from functools import lru_cache
 from pathlib import Path
 
 
-QUALITY_MODEL_SIZES: dict[str, str] = {
-    "Fast": "tiny",
-    "Balanced": "base",
-    "Best": "small",
-}
-
-
 @dataclass(frozen=True)
 class TranscriptionSegment:
     start: float
@@ -31,47 +24,11 @@ class TranscriptionResult:
     segments: tuple[TranscriptionSegment, ...]
 
 
-def model_size_for_mode(mode: str | None) -> str:
-    return QUALITY_MODEL_SIZES.get(str(mode or "Balanced"), "base")
-
-
-def transcription_model_path(model_size: str, *, local_files_only: bool) -> Path:
-    """Resolve a Faster-Whisper model without hiding network behavior.
-
-    Passing a short model size directly to WhisperModel normally downloads the model
-    automatically. The product checks locally first and exposes a separate explicit
-    download action instead, so pressing Transcribe can never surprise the user with a
-    model download.
-    """
-    try:
-        from faster_whisper.utils import download_model
-    except Exception as exc:
-        raise RuntimeError(
-            "Speech to Text needs the optional local speech tools. Install them from Transcribe first."
-        ) from exc
-    return Path(download_model(model_size, local_files_only=local_files_only))
-
-
-def transcription_model_ready(mode: str | None = "Balanced") -> bool:
-    try:
-        return transcription_model_path(model_size_for_mode(mode), local_files_only=True).exists()
-    except Exception:
-        return False
-
-
-def download_transcription_model(mode: str | None = "Balanced") -> Path:
-    size = model_size_for_mode(mode)
-    return transcription_model_path(size, local_files_only=False)
-
-
 @lru_cache(maxsize=4)
 def _load_model(model_size: str, device: str, compute_type: str):
     from faster_whisper import WhisperModel
 
-    # Never let WhisperModel implicitly reach the network. The product has a separate
-    # user-approved download action and this loader only opens an already cached model.
-    model_path = transcription_model_path(model_size, local_files_only=True)
-    return WhisperModel(str(model_path), device=device, compute_type=compute_type, local_files_only=True)
+    return WhisperModel(model_size, device=device, compute_type=compute_type)
 
 
 def clear_transcription_cache() -> None:
@@ -122,11 +79,7 @@ def transcribe_audio(
     except Exception as exc:
         raise RuntimeError("Speech to Text needs the optional local speech tools. Install them from Transcribe, then try again.") from exc
 
-    selected_size = model_size or model_size_for_mode(mode)
-    if not transcription_model_ready(mode if model_size is None else {"tiny": "Fast", "base": "Balanced", "small": "Best"}.get(selected_size, "Balanced")):
-        raise RuntimeError(
-            f"The {selected_size} speech model is not downloaded yet. Download it from Transcribe, then try again."
-        )
+    selected_size = model_size or {"Fast": "tiny", "Balanced": "base", "Best": "small"}.get(mode, "base")
     selected_language = language if language is not None else language_id
     selected_compute = device if device is not None else compute_preference
     resolved_device, compute_type = _resolve_device(selected_compute)
