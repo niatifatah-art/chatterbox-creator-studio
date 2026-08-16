@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 
-from playwright.sync_api import expect, sync_playwright
+import pytest
+
+pytest.importorskip("playwright")
+from playwright.sync_api import expect, sync_playwright  # noqa: E402
 
 
 BASE_URL = os.environ.get("CREATOR_STUDIO_BASE_URL", "http://127.0.0.1:7860")
