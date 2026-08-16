@@ -96,6 +96,23 @@ def test_explicit_english_only_model_rejects_non_english():
         resolve_model_id("Light", "Arabic", "مرحبا", profile)
 
 
+def test_hidden_english_language_state_cannot_route_arabic_to_light():
+    profile = ProductSystemProfile(compute="cpu", ram_gb=16, vram_gb=None)
+    arabic = "مرحبا، هذا اختبار واضح للصوت باللغة العربية."
+    with pytest.raises(ValueError, match="supports English only"):
+        resolve_model_id("Light", "English", arabic, profile)
+    assert compatible_models("English", arabic) == ("multilingual-v3",)
+    assert resolve_model_id("Auto", "English", arabic, profile) == "multilingual-v3"
+
+
+def test_hidden_english_language_state_cannot_route_detected_spanish_to_english_only_model():
+    profile = ProductSystemProfile(compute="gpu", ram_gb=32, vram_gb=12)
+    spanish = "Hola, esto es una prueba de voz para mi proyecto."
+    with pytest.raises(ValueError, match="supports English only"):
+        resolve_model_id("Expressive", "English", spanish, profile)
+    assert compatible_models("English", spanish) == ("multilingual-v3",)
+
+
 def test_quality_modes_are_simple_but_meaningful():
     assert quality_policy("Fast") == {"quality_check": False, "auto_retries": 0, "best_of_n": 1}
     assert quality_policy("Balanced") == {"quality_check": True, "auto_retries": 0, "best_of_n": 1}
