@@ -19,7 +19,7 @@ jobs:
       - name: Install lightweight development dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Compile Python sources
-        run: python -m compileall -q app.py studio scripts tests
+        run: python -m compileall -q app.py product_app.py studio scripts tests
       - name: Run model-free tests
         run: pytest -q
       - name: Smoke CLI parser and model registry
