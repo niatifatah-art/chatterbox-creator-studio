@@ -163,6 +163,21 @@ def resolve_language(language_ui: str | None, script: str) -> str:
     return detect_script_language(script) or "English"
 
 
+def _routing_language(language_ui: str | None, script: str) -> str:
+    """Return the safest language for model routing/compatibility decisions.
+
+    The visible language control can legitimately be stale or hidden after switching
+    models. Obvious script evidence therefore wins for *routing* so Arabic, Russian,
+    Spanish, etc. can never be sent to an English-only model by accident. Generation
+    language itself still uses resolve_language(), preserving explicit Multilingual
+    language choices.
+    """
+    detected = detect_script_language(script)
+    if detected and detected != "English":
+        return detected
+    return resolve_language(language_ui, script)
+
+
 def resolve_model_id(
     model_ui: str | None,
     language_ui: str | None,
@@ -170,7 +185,7 @@ def resolve_model_id(
     profile: ProductSystemProfile,
 ) -> str:
     explicit = model_id_from_ui_name(model_ui)
-    language = resolve_language(language_ui, script)
+    language = _routing_language(language_ui, script)
     if explicit:
         if language != "English" and not MODEL_SPECS[explicit].capabilities.multilingual:
             raise ValueError(f"{model_ui} supports English only. Use Multilingual for {language}.")
@@ -188,7 +203,7 @@ def resolve_model_id(
 
 
 def compatible_models(language_ui: str | None, script: str) -> tuple[str, ...]:
-    language = resolve_language(language_ui, script)
+    language = _routing_language(language_ui, script)
     if language == "English":
         return tuple(MODEL_SPECS)
     return tuple(model_id for model_id, spec in MODEL_SPECS.items() if spec.capabilities.multilingual)
