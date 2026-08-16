@@ -367,7 +367,7 @@ def _effective_tuning(
             profile.min_p,
             profile.top_p,
             profile.top_k,
-            profile.speech_speed,
+            float(speech_speed),
         )
     return (
         float(exaggeration), float(cfg_weight), float(temperature), float(repetition_penalty),
@@ -770,9 +770,9 @@ def speech_tools_available() -> bool:
     return importlib.util.find_spec("faster_whisper") is not None
 
 
-def _initial_script() -> str:
-    if core.initial_project:
-        project = core.projects.load(core.initial_project)
+def _initial_script(project_id: str | None) -> str:
+    if project_id:
+        project = core.projects.load(project_id)
         if project and (project.get("script") or "").strip():
             return str(project.get("script"))
     return "Type what you want to hear."
@@ -813,7 +813,7 @@ initial_style = core.settings.get("preset") if core.settings.get("preset") in co
 initial_quality = core.settings.get("generation_quality") if core.settings.get("generation_quality") in core.QUALITY_MODES else "Balanced"
 initial_compute = core.settings.get("compute_preference") if core.settings.get("compute_preference") in core.COMPUTE_CHOICES else "Auto"
 initial_quality_policy = core.quality_policy(initial_quality)
-initial_script = _initial_script()
+initial_script = _initial_script(initial_project)
 initial_model_id, initial_profile = _resolve_profile(initial_model_ui, initial_language_ui, initial_script, initial_compute, initial_style)
 initial_caps = capabilities_for(initial_model_id)
 compare_choices, compare_selected, compare_note, compare_enabled = _compare_data(initial_language_ui, initial_script, None)
