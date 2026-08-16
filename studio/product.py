@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -66,14 +68,67 @@ def _in_ranges(char: str, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(start <= value <= end for start, end in ranges)
 
 
-def detect_script_language(text: str) -> str | None:
-    """Detect languages with distinctive scripts without a heavy language model.
+# Auto should be helpful without pretending to be certain. Distinctive scripts are
+# detected directly. For Latin-script text we only select a language when several
+# common words agree and one language clearly wins; otherwise Auto stays English.
+_LATIN_HINTS: dict[str, frozenset[str]] = {
+    "Spanish": frozenset({"hola", "esto", "esta", "una", "para", "pero", "como", "gracias", "prueba", "voz", "quiero", "puede"}),
+    "French": frozenset({"bonjour", "merci", "avec", "pour", "mais", "une", "voix", "essai", "ceci", "dans", "vous", "être"}),
+    "German": frozenset({"hallo", "danke", "und", "ist", "eine", "stimme", "test", "mit", "für", "nicht", "ich", "das"}),
+    "Italian": frozenset({"ciao", "grazie", "questo", "questa", "una", "voce", "prova", "con", "per", "non", "sono", "che"}),
+    "Portuguese": frozenset({"olá", "obrigado", "obrigada", "isto", "uma", "voz", "teste", "com", "para", "não", "você", "que"}),
+    "Dutch": frozenset({"hallo", "dank", "dit", "een", "stem", "test", "met", "voor", "niet", "het", "dat", "van"}),
+    "Turkish": frozenset({"merhaba", "teşekkür", "bu", "bir", "ses", "test", "için", "ile", "değil", "ben", "çok", "ve"}),
+    "Swedish": frozenset({"hej", "tack", "detta", "en", "röst", "test", "med", "för", "inte", "och", "jag", "är"}),
+    "Norwegian": frozenset({"hei", "takk", "dette", "en", "stemme", "test", "med", "for", "ikke", "og", "jeg", "er"}),
+    "Danish": frozenset({"hej", "tak", "dette", "en", "stemme", "test", "med", "for", "ikke", "og", "jeg", "er"}),
+    "Finnish": frozenset({"hei", "kiitos", "tämä", "ääni", "testi", "kanssa", "varten", "ei", "ja", "minä", "on", "että"}),
+    "Polish": frozenset({"cześć", "dzień", "dziękuję", "to", "jest", "głos", "test", "dla", "nie", "i", "ja", "że"}),
+    "Swahili": frozenset({"jambo", "asante", "hii", "sauti", "jaribio", "kwa", "na", "sio", "mimi", "ni", "una", "ya"}),
+    "Malay": frozenset({"hai", "terima", "kasih", "ini", "suara", "ujian", "untuk", "dengan", "tidak", "saya", "dan", "adalah"}),
+}
 
-    Latin-script languages are intentionally not guessed: short creator scripts are
-    easy to misclassify. They remain English in Auto unless the user chooses a
-    language. Distinctive scripts can be recognized conservatively and allow Auto
-    to pick the multilingual model without exposing another setup step.
-    """
+_LATIN_DIACRITIC_HINTS: dict[str, frozenset[str]] = {
+    "Spanish": frozenset("ñ¿¡"),
+    "French": frozenset("àâçéèêëîïôùûüÿœ"),
+    "German": frozenset("äöüß"),
+    "Portuguese": frozenset("ãõáâàçéêíóôú"),
+    "Turkish": frozenset("ğışçöü"),
+    "Swedish": frozenset("åäö"),
+    "Norwegian": frozenset("æøå"),
+    "Danish": frozenset("æøå"),
+    "Finnish": frozenset("äö"),
+    "Polish": frozenset("ąćęłńóśźż"),
+}
+
+
+def _latin_tokens(text: str) -> list[str]:
+    lowered = unicodedata.normalize("NFC", text or "").lower()
+    return re.findall(r"[^\W\d_]+", lowered, flags=re.UNICODE)
+
+
+def detect_latin_language(text: str) -> str | None:
+    """Return a conservative Latin-script language hint, or None when unsure."""
+    tokens = _latin_tokens(text)
+    if len(tokens) < 3:
+        return None
+    token_set = set(tokens)
+    lowered = (text or "").lower()
+    scores: dict[str, int] = {}
+    for language, words in _LATIN_HINTS.items():
+        word_score = len(token_set & words)
+        diacritic_score = 1 if any(char in lowered for char in _LATIN_DIACRITIC_HINTS.get(language, ())) else 0
+        scores[language] = word_score + diacritic_score
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    if not ranked or ranked[0][1] < 2:
+        return None
+    if len(ranked) > 1 and ranked[0][1] <= ranked[1][1]:
+        return None
+    return ranked[0][0]
+
+
+def detect_script_language(text: str) -> str | None:
+    """Detect supported languages conservatively without a heavy language model."""
     letters = [char for char in (text or "") if char.isalpha()]
     if not letters:
         return None
@@ -93,7 +148,8 @@ def detect_script_language(text: str) -> str | None:
         matches = sum(1 for char in letters if _in_ranges(char, ranges))
         if matches / len(letters) >= threshold:
             return language
-    return None
+
+    return detect_latin_language(text)
 
 
 def script_looks_arabic(text: str) -> bool:
