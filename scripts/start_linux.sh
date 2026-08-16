@@ -8,4 +8,4 @@ if [[ ! -x .venv/bin/python ]]; then
 fi
 
 export PYTHONUTF8=1
-exec .venv/bin/python app.py
+exec .venv/bin/python product_app.py
