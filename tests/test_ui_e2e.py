@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -9,11 +10,17 @@ from playwright.sync_api import expect, sync_playwright  # noqa: E402
 
 
 BASE_URL = os.environ.get("CREATOR_STUDIO_BASE_URL", "http://127.0.0.1:7860")
+ARTIFACT_DIR = Path(os.environ.get("UI_ARTIFACT_DIR", "ui-artifacts"))
 
 
 def _button(page, selector: str):
     root = page.locator(selector)
     return root if root.evaluate("el => el.tagName.toLowerCase() === 'button'") else root.locator("button")
+
+
+def _shot(page, name: str) -> None:
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(ARTIFACT_DIR / name), full_page=True)
 
 
 def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
@@ -31,6 +38,7 @@ def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
         expect(page.locator("#model-picker")).to_be_visible()
         expect(page.locator("#language-picker")).to_be_visible()
         expect(_button(page, "#generate-btn")).to_be_visible()
+        _shot(page, "01-create.png")
 
         # Pause shortcuts are actions, not mysterious persistent modes. They insert
         # at the text caret rather than silently appending at the end of the script.
@@ -62,6 +70,7 @@ def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
         expect(light.locator("input")).to_be_checked()
         expect(page.locator("#compare-status")).to_contain_text("Install", timeout=10_000)
         expect(_button(page, "#compare-btn")).to_be_disabled()
+        _shot(page, "02-compare-selected.png")
 
         # Models use a persistent selected state rather than an invisible dropdown
         # choice, and changing the choice visibly updates the checked control.
@@ -72,6 +81,7 @@ def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
         expressive.click()
         expect(expressive.locator("input")).to_be_checked()
         expect(page.get_by_text("Models change only when", exact=False)).to_be_visible()
+        _shot(page, "03-models.png")
 
         # Speech-to-text setup is available where Transcribe lives; users are not
         # forced to hunt through Expert settings just to enable the tool.
@@ -79,5 +89,6 @@ def test_primary_shell_exposes_clear_choices_without_surprise_downloads():
         page.get_by_role("tab", name="Transcribe", exact=True).click()
         expect(_button(page, "#transcribe-btn")).to_be_visible()
         expect(_button(page, "#install-stt-btn")).to_be_visible()
+        _shot(page, "04-transcribe.png")
 
         browser.close()
