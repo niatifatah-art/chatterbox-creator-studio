@@ -1,0 +1,114 @@
+/* v1.1.1 interaction layer: make state obvious without making the interface loud. */
+
+.primary-actions {
+  align-items: stretch !important;
+  gap: .55rem !important;
+}
+
+#compare-cancel {
+  max-width: 7rem !important;
+}
+
+.choice-pills {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.choice-pills > div,
+.choice-pills fieldset {
+  gap: .45rem !important;
+}
+
+/* Gradio renders Radio and CheckboxGroup choices as labels containing an input.
+   The checked state therefore stays visible after a click, not just on hover. */
+.choice-pills label:has(input:checked),
+#compare-model-picker label:has(input:checked),
+#model-action-picker label:has(input:checked) {
+  background: rgba(124, 140, 255, .16) !important;
+  border-color: rgba(144, 157, 255, .58) !important;
+  color: var(--app-text) !important;
+  box-shadow: inset 0 0 0 1px rgba(124, 140, 255, .2), 0 5px 18px rgba(53, 67, 160, .13) !important;
+}
+
+.choice-pills label,
+#compare-model-picker label,
+#model-action-picker label {
+  border: 1px solid var(--app-border) !important;
+  border-radius: 11px !important;
+  background: rgba(255, 255, 255, .025) !important;
+  padding: .55rem .72rem !important;
+  transition: background .14s ease, border-color .14s ease, transform .14s ease !important;
+}
+
+.choice-pills label:hover,
+#compare-model-picker label:hover,
+#model-action-picker label:hover {
+  border-color: var(--app-border-strong) !important;
+  background: rgba(255, 255, 255, .045) !important;
+}
+
+#compare-model-picker {
+  margin-top: .15rem !important;
+}
+
+#compare-model-picker .wrap,
+#model-action-picker .wrap {
+  gap: .45rem !important;
+}
+
+.compare-results-row {
+  gap: .6rem !important;
+  align-items: flex-start !important;
+}
+
+.compare-results-row .compare-card {
+  min-width: 0 !important;
+}
+
+#compare-status,
+#create-status {
+  transition: border-color .15s ease, background .15s ease;
+}
+
+#generate-btn[disabled],
+#compare-btn[disabled] {
+  cursor: progress !important;
+  opacity: .76 !important;
+  transform: none !important;
+}
+
+#compare-cancel button,
+#compare-cancel {
+  border-color: rgba(239, 134, 134, .25) !important;
+}
+
+#model-cards .model-card {
+  min-height: 142px;
+}
+
+#model-action-picker label {
+  min-width: 8.2rem;
+  justify-content: center;
+}
+
+#stt-quality label {
+  min-width: 6.3rem;
+  justify-content: center;
+}
+
+/* Keep disabled actions legible so users understand that a choice is unavailable. */
+.gradio-container button:disabled {
+  opacity: .52;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .primary-actions,
+  .compare-results-row {
+    flex-wrap: wrap !important;
+  }
+  #compare-cancel {
+    max-width: none !important;
+  }
+}
