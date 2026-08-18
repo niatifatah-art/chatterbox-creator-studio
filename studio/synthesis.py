@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import uuid
 import wave
@@ -9,13 +8,12 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from studio.artifact_store import ArtifactStore
-from studio.cancellation import GenerationCancelled
+from studio.cancellation import GenerationCancelled, raise_if_generation_cancelled
 from studio.engine_registry import ENGINE_MANIFESTS, EngineManifest
 from studio.language import normalize_language_code
 from studio.model_manager import LocalModelManager, LocalModelStatus
 from studio.protocol import (
     Capability,
-    Priority,
     Provenance,
     SpeechArtifact,
     SpeechErrorKind,
@@ -58,7 +56,7 @@ class SynthesisExecutionSettings:
     raw_mode: bool = False
     smart_chunking: bool = True
     max_chars: int = 280
-    chunk_gap_seconds: float = 0.10
+    chunk_gap_seconds: float = 0.06
     recipe_revision: str | None = None
 
 
@@ -69,9 +67,9 @@ class ModelManagerProtocol(Protocol):
 class GenerationResultProtocol(Protocol):
     audio_path: Path
     metadata_path: Path
-    seed: int
-    chunks: list[str]
     model_id: str
+    seed: int
+    chunk_count: int
 
 
 class EngineProtocol(Protocol):
@@ -86,6 +84,7 @@ class EngineProtocol(Protocol):
 
 
 EngineFactory = Callable[[Path], EngineProtocol]
+ProgressCallback = Callable[[str, int | None, int | None], None]
 
 
 def _default_engine_factory(output_dir: Path) -> EngineProtocol:
@@ -93,6 +92,13 @@ def _default_engine_factory(output_dir: Path) -> EngineProtocol:
     from studio.engine import ChatterboxEngine
 
     return ChatterboxEngine(output_dir)
+
+
+def _notify(callback: ProgressCallback | None, stage: str, current: int | None = None, total: int | None = None) -> None:
+    raise_if_generation_cancelled()
+    if callback is not None:
+        callback(stage, current, total)
+    raise_if_generation_cancelled()
 
 
 def _wav_duration(path: Path) -> float:
@@ -126,9 +132,9 @@ def _safe_generation_metadata(result: GenerationResultProtocol, settings: Synthe
     # be useful to downstream automation without leaking scripts or machine locations.
     return {
         "seed": int(result.seed),
-        "chunk_count": len(result.chunks),
+        "chunk_count": int(result.chunk_count),
         "raw_mode": bool(settings.raw_mode),
-        "smart_chunking": bool(settings.smart_chunking),
+        "smart_chunking": bool(settings.smart_chunking and not settings.raw_mode),
         "speech_speed": float(settings.speech_speed),
     }
 
@@ -161,7 +167,11 @@ class SpeechSynthesisService:
         self.work_dir = self.data_dir / "generation-work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-    def _status_for_manifest(self, manifest: EngineManifest, binding_model_id: str | None = None) -> tuple[str | None, LocalModelStatus | None]:
+    def _status_for_manifest(
+        self,
+        manifest: EngineManifest,
+        binding_model_id: str | None = None,
+    ) -> tuple[str | None, LocalModelStatus | None]:
         model_id = binding_model_id
         if model_id is None and len(manifest.model_ids) == 1:
             model_id = manifest.model_ids[0]
@@ -247,7 +257,7 @@ class SpeechSynthesisService:
         request: SpeechSynthesisRequest,
         *,
         execution: SynthesisExecutionSettings | None = None,
-        progress_callback: Callable[[str], None] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> SpeechArtifact:
         text = (request.text or "").strip()
         if not text:
@@ -262,117 +272,131 @@ class SpeechSynthesisService:
             )
 
         settings = execution or SynthesisExecutionSettings()
-        profile = self._resolve_profile(request)
         try:
-            language = normalize_language_code(request.language, text)
-        except ValueError as exc:
-            raise SynthesisError(SpeechErrorKind.INVALID_ARGUMENT, str(exc)) from exc
+            _notify(progress_callback, "preparing")
+            profile = self._resolve_profile(request)
+            try:
+                language = normalize_language_code(request.language, text)
+            except ValueError as exc:
+                raise SynthesisError(SpeechErrorKind.INVALID_ARGUMENT, str(exc)) from exc
 
-        decision = self._select_route(request, profile, language)
-        manifest = ENGINE_MANIFESTS[decision.engine_id]
-        binding = profile.binding_for(decision.engine_id)
-        model_id, status = self._status_for_manifest(manifest, binding.model_id if binding else None)
-        if model_id is None:
-            raise SynthesisError(
-                SpeechErrorKind.ENGINE_UNAVAILABLE,
-                f"{manifest.display_name} does not have a certified model asset for local synthesis yet.",
-                data={"engine_id": manifest.engine_id},
-            )
-        if status is None or not status.installed or not status.snapshot_path:
-            raise SynthesisError(
-                SpeechErrorKind.MODEL_NOT_INSTALLED,
-                f"The model required by {manifest.display_name} is not installed.",
-                data={"engine_id": manifest.engine_id, "model_id": model_id},
-            )
+            decision = self._select_route(request, profile, language)
+            manifest = ENGINE_MANIFESTS[decision.engine_id]
+            binding = profile.binding_for(decision.engine_id)
+            model_id, status = self._status_for_manifest(manifest, binding.model_id if binding else None)
+            if model_id is None:
+                raise SynthesisError(
+                    SpeechErrorKind.ENGINE_UNAVAILABLE,
+                    f"{manifest.display_name} does not have a certified model asset for local synthesis yet.",
+                    data={"engine_id": manifest.engine_id},
+                )
+            if status is None or not status.installed or not status.snapshot_path:
+                raise SynthesisError(
+                    SpeechErrorKind.MODEL_NOT_INSTALLED,
+                    f"The model required by {manifest.display_name} is not installed.",
+                    data={"engine_id": manifest.engine_id, "model_id": model_id},
+                )
 
-        reference = self._resolve_reference(profile)
-        if progress_callback:
-            progress_callback("loading")
+            reference = self._resolve_reference(profile)
+            _notify(progress_callback, "loading")
 
-        invocation_dir = self.work_dir / uuid.uuid4().hex
-        invocation_dir.mkdir(parents=True, exist_ok=False)
-        engine: EngineProtocol | None = None
-        try:
-            engine = self.engine_factory(invocation_dir)
-            if settings.device:
-                engine.set_device(settings.device, settings.device_label)
-            engine.set_model_path(model_id, status.snapshot_path)
-            if progress_callback:
-                progress_callback("generating")
-            result = engine.generate(
-                text=text,
-                voice_path=reference,
-                language_id=language,
-                exaggeration=settings.exaggeration,
-                cfg_weight=settings.cfg_weight,
-                temperature=settings.temperature,
-                repetition_penalty=settings.repetition_penalty,
-                min_p=settings.min_p,
-                top_p=settings.top_p,
-                top_k=settings.top_k,
-                speech_speed=settings.speech_speed,
-                raw_mode=settings.raw_mode,
-                smart_chunking=settings.smart_chunking,
-                max_chars=settings.max_chars,
-                chunk_gap_seconds=settings.chunk_gap_seconds,
-                seed=settings.seed,
-            )
-            audio_path = Path(result.audio_path).resolve()
-            if not audio_path.is_file():
-                raise SynthesisError(SpeechErrorKind.GENERATION_FAILED, "Speech engine returned no audio file.")
-            if progress_callback:
-                progress_callback("validating")
-            duration = _wav_duration(audio_path)
-            artifact = self.artifact_store.register_file(
-                audio_path,
-                artifact_id=f"speech-{uuid.uuid4().hex}",
-                mime_type="audio/wav",
-                copy=True,
-            )
-            recipe_revision = settings.recipe_revision
-            if recipe_revision is None and binding is not None and binding.recipe_revision is not None:
-                # Record a binding recipe revision only when it is the current preferred
-                # engine: generic recipe application is implemented in the calibration
-                # phase. This avoids claiming an unapplied candidate recipe.
-                if profile.profile.preferred_engine_id == decision.engine_id:
-                    recipe_revision = str(binding.recipe_revision)
-            public_metadata = _safe_generation_metadata(result, settings)
-            public_metadata["route_reason"] = decision.reason
-            public_metadata["source_kind"] = profile.profile.source.kind.value
-            public_metadata["style_mapping"] = "pending" if request.style not in {"", "auto"} else "auto"
-            if request.pronunciation_hints or profile.pronunciation_hints:
-                public_metadata["pronunciation_hints_applied"] = False
-            return SpeechArtifact(
-                audio=artifact,
-                duration_seconds=duration,
-                language=language,
-                voice_profile_id=profile.profile.profile_id,
-                voice_revision=profile.profile.revision,
-                style=request.style or profile.profile.default_style or "auto",
-                provenance=Provenance(
-                    engine_id=decision.engine_id,
+            invocation_dir = self.work_dir / uuid.uuid4().hex
+            invocation_dir.mkdir(parents=True, exist_ok=False)
+            engine: EngineProtocol | None = None
+            try:
+                engine = self.engine_factory(invocation_dir)
+                if settings.device:
+                    engine.set_device(settings.device, settings.device_label)
+                engine.set_model_path(model_id, status.snapshot_path)
+
+                def engine_progress(message: str, current: int | None, total: int | None) -> None:
+                    _notify(progress_callback, message or "generating", current, total)
+
+                _notify(progress_callback, "generating", 0, None)
+                result = engine.generate(
+                    script=text,
+                    voice_path=reference,
                     model_id=model_id,
-                    model_revision=status.revision or binding.model_revision if binding else status.revision,
-                    recipe_revision=recipe_revision,
-                ),
-                metadata=public_metadata,
-            )
+                    language_id=language,
+                    exaggeration=settings.exaggeration,
+                    cfg_weight=settings.cfg_weight,
+                    temperature=settings.temperature,
+                    repetition_penalty=settings.repetition_penalty,
+                    min_p=settings.min_p,
+                    top_p=settings.top_p,
+                    top_k=settings.top_k,
+                    speech_speed=settings.speech_speed,
+                    raw_mode=settings.raw_mode,
+                    smart_chunking=settings.smart_chunking,
+                    max_chars=settings.max_chars,
+                    chunk_gap_seconds=settings.chunk_gap_seconds,
+                    seed=settings.seed,
+                    progress_callback=engine_progress,
+                )
+                if result.model_id != model_id:
+                    raise SynthesisError(
+                        SpeechErrorKind.GENERATION_FAILED,
+                        "Speech engine generated with an unexpected model identity.",
+                        data={"expected_model_id": model_id, "actual_model_id": result.model_id},
+                    )
+                audio_path = Path(result.audio_path).resolve()
+                if not audio_path.is_file():
+                    raise SynthesisError(SpeechErrorKind.GENERATION_FAILED, "Speech engine returned no audio file.")
+                _notify(progress_callback, "validating")
+                duration = _wav_duration(audio_path)
+                artifact = self.artifact_store.register_file(
+                    audio_path,
+                    artifact_id=f"speech-{uuid.uuid4().hex}",
+                    mime_type="audio/wav",
+                    copy=True,
+                )
+                recipe_revision = settings.recipe_revision
+                if recipe_revision is None and binding is not None and binding.recipe_revision is not None:
+                    # Record a binding recipe revision only when it is the current preferred
+                    # engine: generic recipe application is implemented in the calibration
+                    # phase. This avoids claiming an unapplied candidate recipe.
+                    if profile.profile.preferred_engine_id == decision.engine_id:
+                        recipe_revision = str(binding.recipe_revision)
+                public_metadata = _safe_generation_metadata(result, settings)
+                public_metadata["route_reason"] = decision.reason
+                public_metadata["source_kind"] = profile.profile.source.kind.value
+                public_metadata["style_mapping"] = "pending" if request.style not in {"", "auto"} else "auto"
+                if request.pronunciation_hints or profile.pronunciation_hints:
+                    public_metadata["pronunciation_hints_applied"] = False
+                _notify(progress_callback, "complete", 1, 1)
+                return SpeechArtifact(
+                    audio=artifact,
+                    duration_seconds=duration,
+                    language=language,
+                    voice_profile_id=profile.profile.profile_id,
+                    voice_revision=profile.profile.revision,
+                    style=request.style or profile.profile.default_style or "auto",
+                    provenance=Provenance(
+                        engine_id=decision.engine_id,
+                        model_id=model_id,
+                        model_revision=(status.revision or binding.model_revision) if binding else status.revision,
+                        recipe_revision=recipe_revision,
+                    ),
+                    metadata=public_metadata,
+                )
+            finally:
+                if engine is not None:
+                    try:
+                        unload = getattr(engine, "unload", None)
+                        if callable(unload):
+                            unload()
+                    except Exception:
+                        pass
+                shutil.rmtree(invocation_dir, ignore_errors=True)
         except GenerationCancelled as exc:
             raise SynthesisError(SpeechErrorKind.CANCELLED, str(exc)) from exc
         except SynthesisError:
             raise
         except Exception as exc:
+            engine_id = locals().get("decision").engine_id if "decision" in locals() else None
+            model = locals().get("model_id")
             raise SynthesisError(
                 SpeechErrorKind.GENERATION_FAILED,
                 "Speech generation failed.",
-                data={"error_class": type(exc).__name__, "engine_id": decision.engine_id, "model_id": model_id},
+                data={"error_class": type(exc).__name__, "engine_id": engine_id, "model_id": model},
             ) from exc
-        finally:
-            if engine is not None:
-                try:
-                    unload = getattr(engine, "unload", None)
-                    if callable(unload):
-                        unload()
-                except Exception:
-                    pass
-            shutil.rmtree(invocation_dir, ignore_errors=True)
