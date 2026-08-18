@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from studio.protocol import Capability
+from studio.protocol import Capability, EngineStatus
 
 
 @dataclass(frozen=True, slots=True)
 class EngineManifest:
+    """Small, model-free description of one routable speech implementation.
+
+    `runtime_id` groups variants that can share an isolated runtime. `model_ids`
+    identifies model assets without making those assets the public capability. This
+    lets model/checkpoint replacements happen behind the same engine contract.
+    """
+
     engine_id: str
     display_name: str
     family: str
@@ -15,7 +22,9 @@ class EngineManifest:
     resource_tier: str
     code_license: str
     weights_license: str
-    status: str = "supported"
+    runtime_id: str
+    model_ids: tuple[str, ...] = ()
+    status: EngineStatus = EngineStatus.SUPPORTED
     notes: str = ""
 
     def supports(self, *capabilities: Capability) -> bool:
@@ -24,6 +33,10 @@ class EngineManifest:
     @property
     def multilingual(self) -> bool:
         return "*" in self.languages or len(self.languages) > 1
+
+    @property
+    def auto_routable(self) -> bool:
+        return self.status == EngineStatus.SUPPORTED
 
 
 ENGINE_MANIFESTS: dict[str, EngineManifest] = {
@@ -39,6 +52,8 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="heavy",
         code_license="MIT",
         weights_license="MIT",
+        runtime_id="chatterbox",
+        model_ids=("multilingual-v3",),
         notes="Arabic and multilingual voice cloning.",
     ),
     "chatterbox-turbo": EngineManifest(
@@ -50,6 +65,8 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="medium",
         code_license="MIT",
         weights_license="MIT",
+        runtime_id="chatterbox",
+        model_ids=("turbo",),
         notes="Fast expressive English with native speech tags.",
     ),
     "chatterbox-nano": EngineManifest(
@@ -61,6 +78,8 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="light",
         code_license="MIT",
         weights_license="MIT",
+        runtime_id="chatterbox",
+        model_ids=("nano",),
         notes="CPU-friendly English cloning and expression tags.",
     ),
     "qwen3-tts": EngineManifest(
@@ -77,7 +96,9 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="heavy",
         code_license="Apache-2.0",
         weights_license="Apache-2.0",
-        status="catalogued",
+        runtime_id="qwen3-tts",
+        model_ids=(),  # exact shippable checkpoints are chosen during certification
+        status=EngineStatus.CATALOGUED,
         notes="Voice design, ready voices and cloning; runtime isolation required before shipping.",
     ),
     "kokoro": EngineManifest(
@@ -89,7 +110,9 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="ultra_light",
         code_license="Apache-2.0",
         weights_license="Apache-2.0",
-        status="catalogued",
+        runtime_id="kokoro",
+        model_ids=(),
+        status=EngineStatus.CATALOGUED,
         notes="Tiny preset-voice engine; ideal candidate for low-resource machines.",
     ),
     "faster-whisper": EngineManifest(
@@ -101,6 +124,8 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="medium",
         code_license="MIT",
         weights_license="model-dependent",
+        runtime_id="faster-whisper",
+        model_ids=(),
         notes="Current local STT backend with word timestamps and VAD support.",
     ),
     "whisper-cpp": EngineManifest(
@@ -112,7 +137,9 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="light",
         code_license="MIT",
         weights_license="model-dependent",
-        status="catalogued",
+        runtime_id="whisper-cpp",
+        model_ids=(),
+        status=EngineStatus.CATALOGUED,
         notes="Portable/quantized runtime candidate for low-resource and non-Python installs.",
     ),
     "fun-asr-mlt-nano": EngineManifest(
@@ -124,7 +151,9 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         resource_tier="medium",
         code_license="Apache-2.0",
         weights_license="Apache-2.0",
-        status="catalogued",
+        runtime_id="fun-asr",
+        model_ids=(),
+        status=EngineStatus.CATALOGUED,
         notes="Alternative multilingual ASR candidate including Arabic; timing support must be certified before routing captions to it.",
     ),
 }
@@ -141,5 +170,5 @@ def engines_for(capability: Capability, *, include_catalogued: bool = False) -> 
     return tuple(
         manifest
         for manifest in ENGINE_MANIFESTS.values()
-        if capability in manifest.capabilities and (include_catalogued or manifest.status == "supported")
+        if capability in manifest.capabilities and (include_catalogued or manifest.auto_routable)
     )
