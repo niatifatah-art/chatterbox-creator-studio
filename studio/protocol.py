@@ -296,6 +296,7 @@ class VoiceProfile:
     revision: int = 1
     default_style: str = "auto"
     consistency_locked: bool = False
+    preferred_engine_id: str | None = None
     engine_bindings: tuple[EngineBinding, ...] = ()
     supported_languages: tuple[str, ...] = ()
     pronunciation_hints: dict[str, str] = field(default_factory=dict)
