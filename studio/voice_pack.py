@@ -5,7 +5,7 @@ import json
 import tempfile
 import zipfile
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from studio.artifact_store import ArtifactStore
@@ -111,11 +111,11 @@ def import_voice_pack(
     artifact_store: ArtifactStore,
     profile_id_override: str | None = None,
 ) -> StoredVoiceProfile:
-    """Import a Voice Pack transactionally enough for local creator data.
+    """Import a Voice Pack with validation and rollback of newly-created artifacts.
 
-    The archive is never extracted wholesale. Only members named by the manifest are
-    read, hashes are verified before registration, the profile is written last, and any
-    newly-created artifacts are removed if the import fails.
+    The archive is never extracted wholesale. Only manifest-declared members are read,
+    hashes are verified before registration, the profile is written last, and artifacts
+    created by a failed import are removed again.
     """
 
     source_path = Path(source).expanduser().resolve()
@@ -131,6 +131,8 @@ def import_voice_pack(
             if sum(info.file_size for info in infos) > MAX_PACK_UNCOMPRESSED_BYTES:
                 raise VoicePackError("Voice Pack is too large when unpacked.")
             names = [info.filename for info in infos]
+            if len(names) != len(set(names)):
+                raise VoicePackError("Voice Pack contains duplicate archive members.")
             if names.count("manifest.json") != 1:
                 raise VoicePackError("Voice Pack must contain exactly one manifest.json.")
             try:
@@ -139,7 +141,11 @@ def import_voice_pack(
                 raise VoicePackError("Voice Pack manifest is invalid.") from exc
             if not isinstance(manifest, dict):
                 raise VoicePackError("Voice Pack manifest is invalid.")
-            if manifest.get("format") != VOICEPACK_FORMAT or int(manifest.get("format_version", 0)) != VOICEPACK_VERSION:
+            try:
+                format_version = int(manifest.get("format_version", 0))
+            except (TypeError, ValueError) as exc:
+                raise VoicePackError("Voice Pack format version is invalid.") from exc
+            if manifest.get("format") != VOICEPACK_FORMAT or format_version != VOICEPACK_VERSION:
                 raise VoicePackError("Unsupported Voice Pack format/version.")
 
             try:
@@ -156,20 +162,37 @@ def import_voice_pack(
                 raise VoicePackError("Voice Pack artifact manifest is invalid.")
             expected_names = {"manifest.json"}
             rows: list[tuple[ArtifactRef, str]] = []
+            seen_artifact_ids: set[str] = set()
             for item in exported:
                 if not isinstance(item, dict) or not isinstance(item.get("ref"), dict) or not isinstance(item.get("member"), str):
                     raise VoicePackError("Voice Pack artifact entry is invalid.")
-                ref = ArtifactRef(**item["ref"])
+                try:
+                    ref = ArtifactRef(**item["ref"])
+                except TypeError as exc:
+                    raise VoicePackError("Voice Pack artifact reference is invalid.") from exc
                 member = item["member"]
-                if member == "manifest.json" or not member.startswith("artifacts/") or ".." in Path(member).parts:
+                posix = PurePosixPath(member)
+                if (
+                    member == "manifest.json"
+                    or not member.startswith("artifacts/")
+                    or member != posix.as_posix()
+                    or posix.is_absolute()
+                    or ".." in posix.parts
+                    or len(posix.parts) != 2
+                ):
                     raise VoicePackError("Voice Pack contains an unsafe artifact member.")
-                if member in expected_names:
-                    raise VoicePackError("Voice Pack contains duplicate artifact members.")
+                if member in expected_names or ref.artifact_id in seen_artifact_ids:
+                    raise VoicePackError("Voice Pack contains duplicate artifact entries.")
                 expected_names.add(member)
+                seen_artifact_ids.add(ref.artifact_id)
                 rows.append((ref, member))
 
             if set(names) != expected_names:
                 raise VoicePackError("Voice Pack contains unexpected or missing files.")
+
+            required_ids = {ref.artifact_id for ref in _owned_artifacts(profile)}
+            if required_ids != seen_artifact_ids:
+                raise VoicePackError("Voice Pack artifact list does not match the profile references.")
 
             mapping: dict[str, ArtifactRef] = {}
             with tempfile.TemporaryDirectory(prefix="voicepack-") as temp_directory:
@@ -181,7 +204,7 @@ def import_voice_pack(
                     digest = _sha256_bytes(data)
                     if ref.sha256 and digest != ref.sha256:
                         raise VoicePackError(f"Voice Pack artifact '{ref.artifact_id}' failed its integrity check.")
-                    suffix = Path(member).suffix.lower()
+                    suffix = PurePosixPath(member).suffix.lower()
                     staged = stage / f"{index:02d}{suffix}"
                     staged.write_bytes(data)
 
