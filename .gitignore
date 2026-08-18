@@ -4,12 +4,18 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Local creator data — never commit voices, projects, or generated audio
+# Local creator data — never commit voices, projects, profiles, or generated audio
 data/voices/*
 !data/voices/.gitkeep
 data/projects/
+data/speech-core/
+data/voice-profiles/
+data/artifacts/
+data/backups/
 data/settings.json
 data/model_state.json
+data/*.db
+data/*.db-*
 outputs/*
 !outputs/.gitkeep
 
@@ -18,6 +24,10 @@ outputs/*
 *.pt
 *.ckpt
 .huggingface/
+
+# Portable creator exports are user data, not source fixtures
+*.voicepack
+*.voiceproject
 
 # OS/editor
 .DS_Store
