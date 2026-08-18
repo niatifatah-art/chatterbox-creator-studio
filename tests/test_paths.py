@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from studio.paths import STORAGE_ENV, resolve_storage_root
+from studio.paths import STORAGE_ENV, resolve_storage_root, speech_core_data_dir
 
 
 def test_source_runs_preserve_repository_local_storage(tmp_path: Path):
@@ -58,3 +58,8 @@ def test_frozen_linux_uses_xdg_data_home(tmp_path: Path):
         home=tmp_path / "home",
     )
     assert result == (xdg / "CreatorStudio").resolve()
+
+
+def test_speech_core_uses_one_subdirectory_under_storage_root(tmp_path: Path):
+    root = tmp_path / "portable"
+    assert speech_core_data_dir(root) == (root / "data" / "speech-core").resolve()
