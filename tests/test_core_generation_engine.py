@@ -27,10 +27,20 @@ def _write_wav(path: Path, seconds: float = 0.15, sample_rate: int = 8000) -> No
 class FakeModelManager:
     def __init__(self, root: Path):
         self.root = root
+        self.selected: dict[str, tuple[Path, str]] = {}
+
+    def select_snapshot(self, model_id: str, path: str | Path, *, revision: str | None = None) -> LocalModelStatus:
+        snapshot = Path(path).resolve()
+        self.selected[model_id] = (snapshot, str(revision or snapshot.name))
+        return self.status(model_id)
 
     def status(self, model_id: str) -> LocalModelStatus:
         if model_id != "nano":
             return LocalModelStatus(model_id, False, None, None, 0.0)
+        selected = self.selected.get(model_id)
+        if selected is not None:
+            snapshot, revision = selected
+            return LocalModelStatus(model_id, snapshot.is_dir(), str(snapshot), revision, 0.1)
         snapshot = self.root / "nano"
         snapshot.mkdir(parents=True, exist_ok=True)
         return LocalModelStatus(model_id, True, str(snapshot), "nano-revision", 0.1)
@@ -109,10 +119,11 @@ def _core_backed_engine(tmp_path: Path, monkeypatch):
     source = tmp_path / "voice.wav"
     _write_wav(source)
     name, saved_path = library.save(source, "Creator")
+    manager = FakeModelManager(tmp_path / "models")
     engine = CoreGenerationEngine(
         outputs,
         data / "speech-core",
-        model_manager=FakeModelManager(tmp_path / "models"),
+        model_manager=manager,
         profile_store=library.profile_store,
         artifact_store=library.artifact_store,
     )
@@ -123,6 +134,19 @@ def test_public_chatterbox_constructor_is_now_the_core_compatibility_facade(tmp_
     monkeypatch.setattr("studio.engine.detect_device", lambda: ("cpu", "CPU"))
     engine = ChatterboxEngine(tmp_path / "outputs")
     assert isinstance(engine, CoreGenerationEngine)
+
+
+def test_legacy_set_model_path_synchronizes_native_and_core_model_state(tmp_path, monkeypatch):
+    engine, _library, _name, _saved_path = _core_backed_engine(tmp_path, monkeypatch)
+    snapshot = tmp_path / "managed" / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+
+    engine.set_model_path("nano", snapshot)
+
+    assert Path(FakeNative.instances[0].model_paths["nano"]).resolve() == snapshot.resolve()
+    status = engine.model_manager.status("nano")
+    assert Path(status.snapshot_path or "").resolve() == snapshot.resolve()
+    assert status.revision == "abc123"
 
 
 def test_saved_legacy_voice_path_generates_through_core_and_preserves_history_files(tmp_path, monkeypatch):
@@ -145,7 +169,6 @@ def test_saved_legacy_voice_path_generates_through_core_and_preserves_history_fi
     metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
     assert metadata["original_script"].startswith("Hello through")
     assert FakeNative.instances and FakeNative.instances[0].calls[0]["model_id"] == "nano"
-    # The native call receives the canonical artifact, not the legacy UI mirror.
     assert Path(FakeNative.instances[0].calls[0]["voice_path"]).resolve() != saved_path.resolve()
     assert library.list() == [name]
 
