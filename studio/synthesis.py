@@ -308,6 +308,20 @@ class SpeechSynthesisService:
                     f"The model required by {manifest.display_name} is not installed.",
                     data={"engine_id": manifest.engine_id, "model_id": model_id},
                 )
+            if binding is not None and binding.model_revision and status.revision != binding.model_revision:
+                # A calibrated voice binding is a reproducibility promise. Until the
+                # generic model manager can select any retained historical snapshot,
+                # fail closed rather than silently speaking with a different revision.
+                raise SynthesisError(
+                    SpeechErrorKind.MODEL_NOT_INSTALLED,
+                    "The voice is pinned to a different model revision than the one currently selected.",
+                    data={
+                        "engine_id": manifest.engine_id,
+                        "model_id": model_id,
+                        "required_revision": binding.model_revision,
+                        "selected_revision": status.revision,
+                    },
+                )
 
             reference = self._resolve_reference(profile)
             _notify(progress_callback, "loading")
@@ -386,7 +400,7 @@ class SpeechSynthesisService:
                     provenance=Provenance(
                         engine_id=decision.engine_id,
                         model_id=model_id,
-                        model_revision=(status.revision or binding.model_revision) if binding else status.revision,
+                        model_revision=status.revision,
                         recipe_revision=recipe_revision,
                     ),
                     metadata=public_metadata,
