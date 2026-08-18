@@ -261,12 +261,40 @@ class VoiceProfileStore:
         record = self.get(profile_id)
         if record is None:
             raise FileNotFoundError(f"Voice profile '{profile_id}' does not exist.")
+        if promote_revision and not binding.enabled:
+            raise ValueError("A disabled engine binding cannot be promoted.")
         bindings = [item for item in record.bindings if item.engine_id != binding.engine_id]
         bindings.append(binding)
         profile = replace(
             record.profile,
             engine_bindings=tuple(sorted(bindings, key=lambda item: item.engine_id)),
+            preferred_engine_id=binding.engine_id if promote_revision else record.profile.preferred_engine_id,
             revision=record.profile.revision + (1 if promote_revision else 0),
+        )
+        return self.save(StoredVoiceProfile(profile=profile, created_at=record.created_at))
+
+    def set_preferred_engine(self, profile_id: str, engine_id: str | None) -> StoredVoiceProfile:
+        """Promote an existing enabled binding as the stable voice route.
+
+        Promotion is a voice-identity decision, so changing the preferred engine bumps
+        the VoiceProfile revision. Re-selecting the current route is idempotent.
+        Passing None clears the pin and also creates a new revision when a pin existed.
+        """
+
+        record = self.get(profile_id)
+        if record is None:
+            raise FileNotFoundError(f"Voice profile '{profile_id}' does not exist.")
+
+        target = (engine_id or "").strip() or None
+        if target == record.profile.preferred_engine_id:
+            return record
+        if target is not None and record.binding_for(target) is None:
+            raise ValueError(f"Voice profile '{profile_id}' has no enabled binding for engine '{target}'.")
+
+        profile = replace(
+            record.profile,
+            preferred_engine_id=target,
+            revision=record.profile.revision + 1,
         )
         return self.save(StoredVoiceProfile(profile=profile, created_at=record.created_at))
 
