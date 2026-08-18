@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Keep the example directly executable from a source checkout without requiring an
+# editable install. Packaged/external clients will import the public client normally.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from studio.rpc_client import SpeechRpcClient
 
