@@ -5,7 +5,12 @@ import re
 import unicodedata
 
 
-_WINDOWS_DEVICE = re.compile(r"^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$", re.IGNORECASE)
+# Windows treats these device names as reserved even when followed by an extension,
+# e.g. NUL.txt or COM1.log. Match the reserved base and any suffix after a period.
+_WINDOWS_DEVICE = re.compile(
+    r"^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$",
+    re.IGNORECASE,
+)
 _DEFAULT_MAX_UTF8_BYTES = 180
 
 
