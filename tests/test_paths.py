@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from studio.paths import STORAGE_ENV, resolve_storage_root, speech_core_data_dir
+from studio.rpc_main import LEGACY_DATA_ENV, _default_data_dir
 
 
 def test_source_runs_preserve_repository_local_storage(tmp_path: Path):
@@ -63,3 +64,9 @@ def test_frozen_linux_uses_xdg_data_home(tmp_path: Path):
 def test_speech_core_uses_one_subdirectory_under_storage_root(tmp_path: Path):
     root = tmp_path / "portable"
     assert speech_core_data_dir(root) == (root / "data" / "speech-core").resolve()
+
+
+def test_first_public_speech_core_data_env_remains_a_compatibility_override(tmp_path: Path, monkeypatch):
+    legacy = tmp_path / "legacy-sidecar-data"
+    monkeypatch.setenv(LEGACY_DATA_ENV, str(legacy))
+    assert _default_data_dir() == legacy.resolve()
