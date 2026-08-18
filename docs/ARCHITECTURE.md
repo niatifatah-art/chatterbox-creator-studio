@@ -58,6 +58,36 @@ Any other local project ── public Speech Client ──┘
 
 The external boundary is deliberately ML-runtime-free. A caller should never need to import Gradio, PyTorch, Chatterbox, Qwen or a Studio screen.
 
+## Current product synthesis path
+
+Phase 3 moved existing product generation onto Speech Core without rewriting the Gradio UX first:
+
+```text
+Create / Compare / Batch / CLI
+        │
+        │ existing engine-like controller contract
+        ▼
+CoreGenerationEngine            # temporary migration facade
+        │
+        ▼
+SpeechSynthesisService
+        │
+        ├── VoiceProfileStore
+        ├── ArtifactStore
+        ├── router
+        ├── selected model revision
+        │
+        ▼
+NativeChatterboxEngine           # implementation detail behind Core
+        │
+        ▼
+V3 / Turbo / Nano
+```
+
+`ChatterboxEngine(...)` remains as a backward-compatible constructor name for current controller code, but it returns the Core-backed facade. New product features must not depend on this trick. New engine families are added behind Speech Core after the generic runtime/engine manager exists.
+
+The native class is deliberately named `NativeChatterboxEngine` so direct use is visible in review. It is appropriate only inside the Speech Core execution factory and explicit migration/parity tests.
+
 ## Layer responsibilities
 
 ### Voice Studio
@@ -97,9 +127,9 @@ Owns reusable speech behavior:
 - synthesis/transcription/QA services as each becomes certified;
 - runtime/model management boundaries.
 
-**Current Phase 2 state:** Speech Core now executes the supported Chatterbox V3/Turbo/Nano synthesis family through `SpeechSynthesisService`. It resolves a Voice Profile, logical clone reference, route and exact selected model snapshot; returns `SpeechArtifact`; and exposes this over the stdio RPC/client. It never downloads a missing model during synthesis.
+Speech Core now executes the supported Chatterbox V3/Turbo/Nano synthesis family through `SpeechSynthesisService`. It resolves a Voice Profile, logical clone reference, route and exact selected model snapshot; returns `SpeechArtifact`; and exposes synthesis over the stdio RPC/client. It never downloads a missing model during synthesis.
 
-The current product UI still uses the direct legacy controller path until Phase 3 parity/cutover. This temporary duplication is intentional and must not become permanent.
+For the in-process product facade, Core can reuse one process-owned native engine between takes so Best-of/Batch/Compare do not reload a model unnecessarily. The public sidecar lifecycle remains independent and may release the engine after a request.
 
 ### Engine adapters
 
@@ -113,20 +143,22 @@ Examples:
 - semantic style -> tested engine recipe;
 - sampling/tuning -> Advanced/internal execution settings.
 
-During Phase 2 only the Chatterbox family has a Core execution adapter. Catalogued Qwen/Kokoro routes are rejected before the Chatterbox factory, preventing an implementation-family mix-up.
+Currently only the Chatterbox family has a Core execution path. Catalogued Qwen/Kokoro routes are rejected before the Chatterbox native factory, preventing an implementation-family mix-up.
 
 ## Engine, runtime and model are different objects
 
 Do not collapse:
 
 ```text
-Engine route        chatterbox-v3
-Runtime             chatterbox
+Engine route         chatterbox-v3
+Runtime              chatterbox
 Model asset          multilingual-v3 @ immutable resolved revision
 Voice binding        VoiceProfile + calibrated route/model/recipe
 ```
 
 This separation lets a model be replaced without changing the public capability, a runtime be upgraded without changing voice identity, and a new engine be added without product-UI branches.
+
+Phase 4 is responsible for making this separation concrete in installation/update/remove/rollback management. The current `LocalModelManager` is still Chatterbox-specific.
 
 ## Engine status and Auto
 
@@ -139,7 +171,7 @@ Routing currently uses compatibility, install state, explicit override, consiste
 
 ## Canonical Voice Profile
 
-`VoiceProfile` is now the single durable identity source:
+`VoiceProfile` is the single durable identity source:
 
 ```text
 VoiceProfile
@@ -152,9 +184,11 @@ VoiceProfile
 └── preferred engine consistency pin
 ```
 
-`studio/voice_profile_store.py` persists this versioned shape. The old `studio/voices.py` library is only a compatibility facade/mirror for the current direct Gradio controller. It is removed after Phase 3 UI cutover, not before.
+`studio/voice_profile_store.py` persists this versioned shape. `studio/voices.py` remains a compatibility facade/mirror for the current Gradio-era name/path workflow and old stored references; it is not a second identity store. Core-backed generation resolves saved legacy paths back to the canonical Voice Profile before synthesis.
 
 Promoting an engine binding may increment the voice revision and pin `preferred_engine_id`. If a binding pins an exact model revision and the selected local model has drifted, Core fails closed instead of silently changing the established voice.
+
+Arbitrary CLI reference WAVs do not become durable user identities automatically: the compatibility facade creates a short-lived Voice Profile + ArtifactRef and removes both after generation.
 
 ## Artifacts
 
@@ -173,6 +207,8 @@ ArtifactRef
 
 Generated Core speech is copied into artifact storage before temporary generation work is removed. External callers explicitly materialize an artifact to a path they own; public results do not expose the Core's private path.
 
+The current product still preserves its legacy WAV/JSON history files so creator workflows and saved history are not broken during the architectural cutover. Those private files are compatibility outputs; portable integrations use `SpeechArtifact`.
+
 ## Local storage layout
 
 Development runs keep the repository-local storage root; frozen builds use OS user data via `studio.paths.resolve_storage_root`.
@@ -180,7 +216,7 @@ Development runs keep the repository-local storage root; frozen builds use OS us
 ```text
 <storage root>/
 ├── data/
-│   ├── voices/              # temporary legacy mirror for current UI
+│   ├── voices/              # temporary legacy mirror / old references
 │   ├── projects/
 │   ├── settings.json
 │   ├── model_state.json
@@ -188,7 +224,7 @@ Development runs keep the repository-local storage root; frozen builds use OS us
 │       ├── voice-profiles/
 │       ├── artifacts/
 │       └── generation-work/ # temporary; successful work is cleaned
-└── outputs/
+└── outputs/                  # current creator history compatibility outputs
 ```
 
 External projects should use Speech Client/RPC and logical artifacts, not guess these paths.
@@ -205,25 +241,27 @@ Current reusable transport is JSON-RPC-style JSON lines over stdin/stdout. There
 
 Clients begin with `protocol.info` / `ensure_compatible()` and verify overlapping protocol/schema versions before higher-level calls. Clients branch on semantic error kinds, not English text.
 
-Current public synthesis flow:
+Public synthesis flow:
 
 ```text
-external/Studio client
+external client
   -> SpeechSynthesisRequest
   -> Speech Core
   -> VoiceProfile
   -> route
   -> exact installed model snapshot
-  -> Chatterbox engine
+  -> engine implementation
   -> logical SpeechArtifact
   -> optional explicit materialize(destination)
 ```
 
-## Model downloads and cache
+## Model selection, downloads and cache
 
-`LocalModelManager` reuses Hugging Face's shared cache and records the selected immutable snapshot revision. A moving upstream ref therefore does not automatically replace the selected model.
+`LocalModelManager` reuses the existing Hugging Face cache and records the selected snapshot revision. A moving upstream ref therefore does not automatically replace the selected model.
 
-It is still Chatterbox-specific, especially its download specs/removal rules. Phase 4 generalizes Engine/Runtime/Model management before Kokoro/Qwen are allowed to rely on it. New engine families must not be bolted into ResembleAI-specific deletion logic.
+Phase 3 adds `select_snapshot()` so a controller that already resolved an existing managed snapshot can record the same selection in Core state instead of maintaining a second truth. This is a migration bridge, not the final generic model manager.
+
+It is still Chatterbox-specific, especially its source tables and removal safety rules. Phase 4 generalizes Engine/Runtime/Model management before Kokoro/Qwen are allowed to rely on it. New engine families must not be bolted into ResembleAI-specific deletion logic.
 
 ## Runtime isolation target
 
@@ -239,6 +277,14 @@ light product/core runtime
 
 Runtime tooling may use `uv` or another reproducible manager, but this is an Engine Manager implementation choice, never a public API requirement.
 
+The product shell must eventually open with zero heavy engines installed; rendering UI must not require installing every model family.
+
+## Reliability / Batch
+
+Reliability and Batch orchestration depend on a small structural generation protocol rather than a concrete Chatterbox class. They own candidate policy/history/quality orchestration; Speech Core owns synthesis.
+
+This keeps Best-of/Batch reusable when more engines are added and prevents provider-specific logic from leaking upward.
+
 ## Testing gates
 
 Tests are layered:
@@ -247,29 +293,30 @@ Tests are layered:
 2. RPC subprocess/external-client tests;
 3. browser UI E2E;
 4. Windows product smoke;
-5. optional-helper smoke;
+5. optional Nano + Faster-Whisper smoke;
 6. real V3/Turbo/Nano model smokes when synthesis/runtime/model paths change;
 7. migration/privacy/integrity tests;
 8. later clean-install/offline/update/rollback tests.
 
-The real model smoke now executes V3/Turbo/Nano through Speech Core and checks model revision/provenance, valid audio, exact digital pause, safe artifact metadata and progress. Nano also runs a direct-path migration parity guard for stable generation semantics.
+The real model smoke executes V3/Turbo/Nano through Speech Core and checks model revision/provenance, valid audio, exact digital pause, safe artifact metadata and progress. Nano also runs an explicit `NativeChatterboxEngine` parity guard for stable migration semantics.
+
+The optional helper smoke first performs the explicit Nano model install/select lifecycle, then generates through the Core-backed product constructor and verifies Faster-Whisper/audio-finishing helpers. This protects the invariant that synthesis itself never initiates a large download.
 
 ## Current migration sequence
 
 ```text
 contracts/discovery                     ✅
 canonical Voice Profile data            ✅
-Core Chatterbox synthesis               Phase 2 / green gate pending merge
-UI adopts Speech Core                   Phase 3
-remove duplicate direct synthesis       Phase 3
-Generic Engine/Runtime/Model Manager     Phase 4
+Core Chatterbox synthesis               ✅
+existing product generation -> Core     ✅
+Generic Engine/Runtime/Model Manager     Phase 4 next
 Kokoro                                  Phase 5
 Qwen3-TTS                               Phase 6
 STT / QA / certification / projects     later phases
 final Voice-first desktop UI/release    later phases
 ```
 
-Do not reverse this order by adding Qwen/Kokoro branches directly to `app.py` or `product_app.py`.
+Do not reverse this order by adding Qwen/Kokoro branches directly to `app.py`, `product_app.py` or `CoreGenerationEngine`.
 
 ## Non-goals
 
