@@ -6,6 +6,7 @@ from pathlib import Path
 
 from studio.audio import AudioProcessOptions, process_audio
 from studio.engine import ChatterboxEngine
+from studio.model_manager import LocalModelManager
 from studio.preprocess import PreprocessOptions, process_text
 from studio.quality import verify_with_faster_whisper
 
@@ -30,8 +31,17 @@ def main() -> None:
     if number_preview.warnings:
         raise RuntimeError("Number preprocessing returned a warning despite optional dependencies being installed")
 
+    # Speech Core deliberately never starts a multi-GB model download from synthesize().
+    # The smoke therefore exercises the explicit install/select lifecycle first, then
+    # proves the Core-backed compatibility constructor can use that exact snapshot.
+    manager = LocalModelManager(output_dir / "model_state.json")
+    managed = manager.download("nano", progress=lambda current, total, desc: None)
+    if not managed.installed or not managed.snapshot_path or not managed.revision:
+        raise RuntimeError("Explicit Nano install did not produce a pinned local snapshot")
+
     source_text = "This is a local verification test."
     engine = ChatterboxEngine(output_dir)
+    engine.set_model_path("nano", managed.snapshot_path)
     result = engine.generate(
         script=source_text,
         voice_path=voice,
@@ -67,6 +77,7 @@ def main() -> None:
         json.dumps(
             {
                 "ok": True,
+                "nano_revision": managed.revision,
                 "number_preview": number_preview.processed,
                 "transcript": verification.transcript,
                 "similarity": verification.similarity,
