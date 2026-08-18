@@ -132,7 +132,8 @@ def main() -> None:
         raise RuntimeError("Speech Core did not preserve the exact managed model revision")
     if speech.metadata.get("seed") != 12345 or speech.metadata.get("chunk_count") != 1:
         raise RuntimeError("Speech Core did not preserve stable seed/chunk metadata")
-    if str(output_dir) in json.dumps(speech.to_dict()):
+    serialized_speech = speech.to_dict()
+    if str(output_dir) in json.dumps(serialized_speech):
         raise RuntimeError("Public SpeechArtifact leaked a private local path")
     if not any(current == 1 for _stage, current, _total in progress_events):
         raise RuntimeError("Speech Core did not forward engine progress")
@@ -196,8 +197,8 @@ def main() -> None:
                 "samples": int(wav.shape[-1]),
                 "quality_score": quality.score,
                 "quality_warnings": list(quality.warnings),
-                "artifact": speech.audio.to_dict(),
-                "provenance": speech.provenance.to_dict(),
+                "artifact": serialized_speech["audio"],
+                "provenance": serialized_speech["provenance"],
                 "progress_events": len(progress_events),
                 "nano_direct_parity": parity,
             },
