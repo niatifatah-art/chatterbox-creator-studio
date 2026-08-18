@@ -289,6 +289,22 @@ def test_ready_voice_does_not_get_forced_into_chatterbox_clone_path(tmp_path: Pa
     assert exc.value.kind == SpeechErrorKind.ENGINE_UNAVAILABLE
 
 
+def test_catalogued_future_engine_cannot_execute_through_chatterbox_factory(tmp_path: Path):
+    service, _profiles, _artifacts, _manager, engines = _service(tmp_path)
+    with pytest.raises(SynthesisError) as exc:
+        service.synthesize(
+            SpeechSynthesisRequest(
+                text="Hello",
+                voice_profile_id="creator-voice",
+                language="en",
+                engine_override="qwen3-tts",
+            )
+        )
+    assert exc.value.kind == SpeechErrorKind.ENGINE_UNAVAILABLE
+    assert exc.value.data["engine_id"] == "qwen3-tts"
+    assert engines == []
+
+
 def test_preferred_engine_pin_is_respected_for_consistency_voice(tmp_path: Path):
     service, profiles, _artifacts, _manager, _engines = _service(
         tmp_path,
@@ -305,6 +321,23 @@ def test_preferred_engine_pin_is_respected_for_consistency_voice(tmp_path: Path)
         )
     )
     assert result.provenance.engine_id == "chatterbox-nano"
+
+
+def test_raw_mode_is_forwarded_but_public_chunking_metadata_reflects_effective_behavior(tmp_path: Path):
+    service, _profiles, _artifacts, _manager, engines = _service(tmp_path)
+    result = service.synthesize(
+        SpeechSynthesisRequest(
+            text="Raw mode smoke.",
+            voice_profile_id="creator-voice",
+            engine_override="chatterbox-v3",
+        ),
+        execution=SynthesisExecutionSettings(raw_mode=True, smart_chunking=True, seed=24680),
+    )
+    assert engines and engines[0].calls[0]["raw_mode"] is True
+    assert engines[0].calls[0]["smart_chunking"] is True
+    assert engines[0].calls[0]["seed"] == 24680
+    assert result.metadata["raw_mode"] is True
+    assert result.metadata["smart_chunking"] is False
 
 
 def test_core_forwards_progress_and_maps_cooperative_cancel(tmp_path: Path):
