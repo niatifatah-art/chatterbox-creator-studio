@@ -94,6 +94,20 @@ def test_consistency_lock_beats_new_catalogued_quality_candidate():
     assert "pinned voice identity" in decision.reason
 
 
+def test_best_quality_does_not_promote_uncertified_engine_over_supported_route():
+    decision = route(
+        RouteRequest(
+            capability=Capability.SYNTHESIZE,
+            language="en",
+            needs_voice_clone=True,
+            priority=Priority.BEST,
+            installed_engines=frozenset({"chatterbox-v3", "qwen3-tts"}),
+        )
+    )
+    assert decision.engine_id == "chatterbox-v3"
+    assert manifest_for(decision.engine_id).status == "supported"
+
+
 def test_voice_design_can_select_catalogued_engine_but_marks_install_needed():
     decision = route(
         RouteRequest(

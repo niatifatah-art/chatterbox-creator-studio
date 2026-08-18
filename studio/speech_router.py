@@ -69,10 +69,7 @@ def _candidate_score(manifest: EngineManifest, request: RouteRequest) -> tuple[i
         if manifest.engine_id == "kokoro" and request.needs_ready_voice and request.weak_cpu:
             score += 25
 
-    # Supported engines are preferred to catalogued candidates until those candidates
-    # pass install, license, quality and hardware certification in this project.
-    status_score = 20 if manifest.status == "supported" else 0
-    return score + status_score, 1 if installed else 0, manifest.engine_id
+    return score, 1 if installed else 0, manifest.engine_id
 
 
 def route(request: RouteRequest) -> RouteDecision:
@@ -101,8 +98,24 @@ def route(request: RouteRequest) -> RouteDecision:
     if not candidates:
         raise ValueError("No compatible speech engine is registered for this request.")
 
-    candidates.sort(key=lambda manifest: _candidate_score(manifest, request), reverse=True)
-    winner = candidates[0]
+    # Catalogued engines are visible for discovery/manual install, but they cannot
+    # displace a certified route merely because a heuristic gives them a higher
+    # score. We fall back to catalogued candidates only when no certified engine
+    # can satisfy the requested capability at all (for example Voice Design before
+    # its first engine is certified).
+    supported = [manifest for manifest in candidates if manifest.status == "supported"]
+    routable = supported or candidates
+
+    # A consistency-pinned engine is allowed only when it remains compatible. If
+    # it is catalogued rather than certified, keep it only when the caller asked
+    # explicitly for consistency and no certified route can preserve that identity.
+    if request.consistency_engine:
+        pinned = next((manifest for manifest in candidates if manifest.engine_id == request.consistency_engine), None)
+        if pinned is not None and pinned.status == "supported":
+            routable = [pinned, *[manifest for manifest in routable if manifest.engine_id != pinned.engine_id]]
+
+    routable.sort(key=lambda manifest: _candidate_score(manifest, request), reverse=True)
+    winner = routable[0]
     reason_parts = []
     if request.consistency_engine == winner.engine_id:
         reason_parts.append("keeps the pinned voice identity")
@@ -111,9 +124,9 @@ def route(request: RouteRequest) -> RouteDecision:
     if request.priority == Priority.LIGHTWEIGHT or request.weak_cpu:
         reason_parts.append("fits the low-resource preference")
     if winner.status != "supported":
-        reason_parts.append("is catalogued but still needs local certification")
+        reason_parts.append("is the only compatible catalogued route and still needs local certification")
     if not reason_parts:
-        reason_parts.append("best compatible registered route")
+        reason_parts.append("best compatible certified route")
 
     return RouteDecision(
         engine_id=winner.engine_id,

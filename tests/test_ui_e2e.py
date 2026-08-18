@@ -34,6 +34,16 @@ def _choose_dropdown(page, root_selector: str, label: str) -> None:
     expect(listbox).to_have_value(label, timeout=5_000)
 
 
+def _check_choice(group, accessible_name: str):
+    # Use the checkbox's semantic role instead of clicking Gradio's wrapping label.
+    # Playwright's checkbox action waits for actionability and verifies the final state,
+    # which is much less fragile across Gradio/Svelte DOM re-renders.
+    choice = group.get_by_role("checkbox", name=accessible_name, exact=False)
+    choice.check()
+    expect(choice).to_be_checked()
+    return choice
+
+
 def test_primary_shell_is_explicit_adaptive_and_calm():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -86,12 +96,12 @@ def test_primary_shell_is_explicit_adaptive_and_calm():
         assert "Install first" in labels
         expect(_button(page, "#compare-btn")).to_be_disabled()
 
-        multilingual = picker.locator("label", has_text="Multilingual")
-        light = picker.locator("label", has_text="Light")
-        multilingual.click()
-        light.click()
-        expect(multilingual.locator("input")).to_be_checked()
-        expect(light.locator("input")).to_be_checked()
+        # Missing models may be selected deliberately so the UI can explain what must
+        # be installed, but Compare must remain disabled and never download implicitly.
+        multilingual = _check_choice(picker, "Multilingual")
+        light = _check_choice(picker, "Light")
+        expect(multilingual).to_be_checked()
+        expect(light).to_be_checked()
         expect(page.locator("#compare-status")).to_contain_text("Install", timeout=10_000)
         expect(_button(page, "#compare-btn")).to_be_disabled()
         _shot(page, "02-compare-selected.png")
