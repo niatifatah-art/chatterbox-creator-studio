@@ -80,6 +80,11 @@ class SpeechErrorKind(str, Enum):
     NO_COMPATIBLE_ENGINE = "no_compatible_engine"
     PROTOCOL_INCOMPATIBLE = "protocol_incompatible"
     ENGINE_UNAVAILABLE = "engine_unavailable"
+    MODEL_NOT_INSTALLED = "model_not_installed"
+    VOICE_REFERENCE_MISSING = "voice_reference_missing"
+    UNSUPPORTED_VOICE_SOURCE = "unsupported_voice_source"
+    GENERATION_FAILED = "generation_failed"
+    CANCELLED = "cancelled"
     INTERNAL = "internal"
 
 
@@ -291,6 +296,7 @@ class VoiceProfile:
     revision: int = 1
     default_style: str = "auto"
     consistency_locked: bool = False
+    preferred_engine_id: str | None = None
     engine_bindings: tuple[EngineBinding, ...] = ()
     supported_languages: tuple[str, ...] = ()
     pronunciation_hints: dict[str, str] = field(default_factory=dict)

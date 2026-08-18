@@ -9,6 +9,13 @@ on:
       - "studio/model_manager.py"
       - "studio/model_profiles.py"
       - "studio/recipes.py"
+      - "studio/synthesis.py"
+      - "studio/protocol.py"
+      - "studio/engine_registry.py"
+      - "studio/artifact_store.py"
+      - "studio/voice_profile_store.py"
+      - "studio/language.py"
+      - "studio/cancellation.py"
       - "app.py"
       - "requirements.txt"
       - "scripts/smoke_models.py"
@@ -22,6 +29,13 @@ on:
       - "studio/model_manager.py"
       - "studio/model_profiles.py"
       - "studio/recipes.py"
+      - "studio/synthesis.py"
+      - "studio/protocol.py"
+      - "studio/engine_registry.py"
+      - "studio/artifact_store.py"
+      - "studio/voice_profile_store.py"
+      - "studio/language.py"
+      - "studio/cancellation.py"
       - "app.py"
       - "requirements.txt"
       - "scripts/smoke_models.py"
@@ -83,7 +97,7 @@ jobs:
         run: python -m pip install --no-cache-dir -r requirements.txt
       - name: Download official reference voice
         run: curl --fail --location --retry 3 --output /tmp/reference.wav https://storage.googleapis.com/chatterbox-demo-samples/prompts/female_random_podcast.wav
-      - name: Run real model smoke test
+      - name: Run real Speech Core model smoke test
         run: PYTHONPATH=. python scripts/smoke_models.py --model "${{ matrix.model }}" --voice /tmp/reference.wav --output-dir smoke-output
       - name: Upload smoke output
         if: always()

@@ -102,12 +102,20 @@ def test_non_copy_registration_cannot_point_outside_store(tmp_path):
         store.register_file(source, copy=False)
 
 
-def test_resolver_rejects_non_local_and_traversal_refs(tmp_path):
+def test_resolver_rejects_non_local_traversal_alias_and_mismatched_identity(tmp_path):
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
     store = ArtifactStore(tmp_path / "artifacts")
+    ref = store.register_file(source, artifact_id="clip")
+
     with pytest.raises(ValueError):
         store.resolve(ArtifactRef("a", "audio/wav", "file:///private/voice.wav"))
     with pytest.raises(ValueError):
         store.resolve(ArtifactRef("a", "audio/wav", "local://artifacts/../secret"))
+    with pytest.raises(ValueError, match="canonical"):
+        store.resolve(ArtifactRef("different", ref.mime_type, ref.uri, sha256=ref.sha256))
+    with pytest.raises(ValueError, match="canonical"):
+        store.resolve(ArtifactRef("clip", ref.mime_type, "local://artifacts/CLIP", sha256=ref.sha256))
 
 
 def test_remove_is_scoped_to_store(tmp_path):

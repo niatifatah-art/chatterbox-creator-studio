@@ -7,12 +7,14 @@ The protocol exists so Voice Studio, a CLI, ACE, or any other local project can 
 ## Design rules
 
 - Public APIs are capability-oriented, not provider-oriented.
-- JSON payloads contain no absolute machine paths.
-- A caller may discover capabilities before assuming they exist.
+- JSON payloads contain no private absolute machine paths.
+- A caller discovers capabilities before assuming they exist.
 - Version compatibility is checked before long-running work.
 - Human messages may change; machine-readable error kinds do not change casually.
 - The current transport is stdio JSON lines, but contract objects do not depend on that transport.
-- Model/runtimes are implementation details unless a caller explicitly requests a manual engine override.
+- Models and runtimes are implementation details unless a caller explicitly requests an advanced engine override.
+- Missing models are reported; synthesis never starts a large download implicitly.
+- Catalogued engines are discoverable but cannot execute through an unrelated adapter.
 
 ## Versions
 
@@ -23,7 +25,7 @@ The canonical constants live in `studio.protocol`:
 - `SPEECH_SCHEMA_VERSION`
 - `MIN_SPEECH_SCHEMA_VERSION`
 
-A client should call `protocol.info` first. The local Python client exposes `ensure_compatible()` which verifies that the server and client version ranges overlap.
+A client should call `protocol.info` first. The local Python client exposes `ensure_compatible()`, which verifies that the server and client version ranges overlap.
 
 Current protocol-info shape:
 
@@ -67,21 +69,24 @@ The transport may later be adapted to a desktop sidecar or HTTP/WebSocket servic
 |---|---|---|
 | `health` | liveness + protocol summary | no |
 | `protocol.info` | compatibility discovery | no |
-| `capabilities.list` | available/supported capability routes | no |
+| `capabilities.list` | known/supported capability routes | no |
 | `engines.list` | engine/runtime/model catalogue metadata | no |
 | `route.decide` | choose a compatible route | no |
 | `voices.list` | list durable voice identities | no |
 | `voices.get` | inspect one voice identity | no |
+| `speech.synthesize` | synthesize a saved voice through Speech Core | yes |
+| `artifacts.materialize` | copy a logical artifact to an explicit caller-owned path | no ML load |
 
-Planned methods are added only after their Core implementation is tested:
+Current executable synthesis routes are the supported Chatterbox V3/Turbo/Nano family. Other catalogued families remain discovery-only until their own adapters/runtimes are implemented and certified.
 
-- `speech.synthesize`
+Planned methods are published only after their Core implementation is tested:
+
 - `speech.transcribe`
 - `speech.align`
 - `speech.reference.inspect`
 - `speech.quality.verify`
 - `speech.speaker.verify`
-- job submit/status/cancel methods if operations become asynchronous over the public boundary.
+- job submit/status/cancel methods if public operations become asynchronous.
 
 Do not publish a method merely because its contract type exists.
 
@@ -103,7 +108,7 @@ speech.vad.v1
 speech.normalize_audio.v1
 ```
 
-`capabilities.list` returns both all known engine implementations and the currently supported/Auto-routable subset. A client should not assume that a catalogued engine is installed or certified.
+`capabilities.list` returns both all known engine implementations and the currently supported/Auto-routable subset. A client must not assume that a catalogued engine is installed, executable or certified.
 
 ## Engine discovery
 
@@ -122,7 +127,7 @@ speech.normalize_audio.v1
 }
 ```
 
-`engine_id`, runtime and model are deliberately separate. A model checkpoint can be replaced while the external synthesis capability remains stable.
+`engine_id`, runtime and model are deliberately separate. A model checkpoint can be replaced behind the same public synthesis capability, while an established voice binding stays pinned until a replacement is explicitly promoted.
 
 ## Routing
 
@@ -140,7 +145,7 @@ A caller normally requests a capability plus constraints, for example:
 
 The router first filters incompatible engines. Catalogued engines cannot displace a supported route. Current ranking intentionally avoids engine-name-specific quality claims; future Best/Auto ranking consumes certification measurements.
 
-Manual engine override remains possible for advanced callers but is validated against capability and language support.
+Manual engine override remains possible for advanced callers, but it is validated against capability/language/source support. During the current migration, a catalogued non-Chatterbox route is rejected before any Chatterbox execution adapter is loaded.
 
 ## Voice identity
 
@@ -153,7 +158,45 @@ Voice sources are semantic:
 - `designed`
 - `saved`
 
-The richer persisted voice-binding shape is being consolidated in the data phase. Until that migration is complete, callers should treat unknown optional binding fields as forward-compatible.
+`VoiceProfile` is the canonical durable identity. It owns the source, revision, pronunciation/style metadata, engine bindings and an optional `preferred_engine_id` consistency pin. The legacy Gradio `VoiceLibrary` is only a compatibility facade while the UI is migrated.
+
+Promoting an engine binding increments the voice revision and can make that engine the preferred consistency route. If a binding pins a model revision but a different model revision is currently selected, synthesis fails closed instead of silently changing the voice implementation.
+
+## Synthesis request
+
+The public request is semantic:
+
+```json
+{
+  "text": "Hello",
+  "voice_profile_id": "narrator",
+  "language": "auto",
+  "style": "auto",
+  "priority": "auto",
+  "engine_override": null,
+  "schema_version": 1
+}
+```
+
+Engine-native Chatterbox controls remain internal migration settings and are not made part of the stable public contract. Structured semantic events are rejected until their cross-engine execution semantics are implemented; they are never silently ignored.
+
+The public Python client exposes:
+
+```python
+client.ensure_compatible()
+client.capabilities()
+client.voices()
+result = client.synthesize(request)
+client.materialize(result["audio"], destination)
+```
+
+A missing model returns a structured error. `speech.synthesize` does not download it.
+
+## SpeechArtifact
+
+Successful synthesis returns a portable artifact record containing the logical audio reference, duration, language, voice identity/revision, style, engine/model provenance and safe generation metadata. The legacy private metadata file may contain implementation details, but it is not exposed as the public artifact.
+
+Public metadata intentionally excludes the original script and local filesystem paths. The request already owns the text; downstream callers should keep their own task context instead of relying on leaked engine metadata.
 
 ## Artifact references
 
@@ -171,17 +214,26 @@ Durable result contracts use logical artifacts:
 
 A local resolver owns the real path. External projects must not derive or persist the Studio's private filesystem path.
 
+Artifact resolution verifies that the logical ID and URI identify the same canonical object and checks the hash when known. Ambiguous IDs, traversal, aliases and tampered artifacts are rejected.
+
+`artifacts.materialize` is an explicit local export operation: the caller chooses the destination path. The result reports logical ID/status/size, not the Core's private storage path.
+
 ## Errors
 
 JSON-RPC numeric codes remain useful for protocol tooling. Product clients should branch on `error.data.kind` from `SpeechErrorKind`.
 
-Current semantic kinds:
+Current semantic kinds include:
 
 - `invalid_argument`
 - `not_found`
 - `no_compatible_engine`
 - `protocol_incompatible`
 - `engine_unavailable`
+- `model_not_installed`
+- `voice_reference_missing`
+- `unsupported_voice_source`
+- `generation_failed`
+- `cancelled`
 - `internal`
 
 Example:
@@ -191,9 +243,13 @@ Example:
   "jsonrpc": "2.0",
   "id": 4,
   "error": {
-    "code": -32004,
-    "message": "Voice profile 'demo' was not found.",
-    "data": {"kind": "not_found"}
+    "code": -32021,
+    "message": "The model required by Multilingual is not installed.",
+    "data": {
+      "kind": "model_not_installed",
+      "engine_id": "chatterbox-v3",
+      "model_id": "multilingual-v3"
+    }
   }
 }
 ```
@@ -207,12 +263,12 @@ Public request/result metadata must not contain:
 - social account names or handles;
 - platform/publishing configuration;
 - scripts/transcripts inside telemetry;
-- local absolute paths;
+- Core-private absolute paths;
 - secret tokens;
 - hidden user identity defaults.
 
 A larger orchestrator owns its own mapping from accounts/tasks to `voice_profile_id`.
 
-## Minimal client
+## Minimal clients
 
-See `examples/speech_client_minimal.py` for an executable, model-free integration smoke. It intentionally proves discovery/compatibility only until synthesis is migrated behind Speech Core.
+`examples/speech_client_minimal.py` remains the model-free discovery/compatibility smoke. Synthesis callers use the same client after creating/importing a Voice Profile and explicitly installing the required engine/model. Keeping the discovery example model-free prevents integration tests from acquiring multi-GB ML dependencies merely to prove protocol compatibility.

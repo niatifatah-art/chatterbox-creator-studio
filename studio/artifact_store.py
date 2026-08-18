@@ -103,6 +103,11 @@ class ArtifactStore:
         if not identifier or "/" in identifier or "\\" in identifier or identifier in {".", ".."}:
             raise ValueError("Invalid local artifact identifier.")
         safe_id = self._safe_id(identifier)
+        # References emitted by this store are already canonical. Reject aliases or a
+        # mismatched artifact_id instead of resolving one logical object while reporting
+        # another identity to an external caller.
+        if safe_id != identifier or artifact.artifact_id != safe_id:
+            raise ValueError("Artifact reference identity is not canonical.")
         candidates = self._paths_for_id(safe_id)
         if not candidates:
             raise FileNotFoundError(f"Local artifact '{safe_id}' is missing.")
