@@ -219,7 +219,15 @@ def _voices_get(context: RpcContext, params: dict[str, Any]) -> dict[str, Any]:
             f"Voice profile '{profile_id}' was not found.",
             kind=SpeechErrorKind.NOT_FOUND,
         )
-    return _clean(record)
+    payload = _clean(record)
+    # The persisted schema v2 removed duplicate top-level fields, but PR #9 already
+    # exposed them through voices.get. Preserve that RPC response shape for old local
+    # clients while making `profile.*` the canonical source for new clients.
+    if isinstance(payload, dict):
+        payload["bindings"] = [_clean(binding) for binding in record.bindings]
+        payload["pronunciation_hints"] = dict(record.pronunciation_hints)
+        payload["preferred_styles"] = list(record.preferred_styles)
+    return payload
 
 
 Handler = Callable[[RpcContext, dict[str, Any]], Any]

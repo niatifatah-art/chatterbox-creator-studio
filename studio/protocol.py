@@ -255,22 +255,36 @@ class JobProgress:
 
 @dataclass(frozen=True, slots=True)
 class EngineBinding:
-    """Legacy/minimal public binding shape.
+    """A calibrated way to reproduce one stable voice on one engine.
 
-    The richer persisted voice binding is being consolidated in the next data phase.
-    Keep this contract stable until that migration is complete.
+    The public shape intentionally contains only optional engine-specific identity,
+    recipe and certification metadata. A caller may ignore fields it does not need.
     """
 
     engine_id: str
     model_id: str | None = None
+    model_revision: str | None = None
     recipe_id: str | None = None
-    recipe_revision: str | None = None
-    preferred_languages: tuple[str, ...] = ()
+    recipe_revision: str | int | None = None
+    style_recipes: dict[str, str] = field(default_factory=dict)
+    engine_voice_id: str | None = None
+    prompt_artifact: ArtifactRef | None = None
+    certified_languages: tuple[str, ...] = ()
+    preferred_languages: tuple[str, ...] = ()  # kept for v1 compatibility
+    quality_score: float | None = None
+    speaker_similarity_score: float | None = None
+    enabled: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
 
 
 @dataclass(frozen=True, slots=True)
 class VoiceProfile:
+    """Durable voice identity independent from a particular engine/model."""
+
     profile_id: str
     display_name: str
     source: VoiceSource
@@ -279,6 +293,8 @@ class VoiceProfile:
     consistency_locked: bool = False
     engine_bindings: tuple[EngineBinding, ...] = ()
     supported_languages: tuple[str, ...] = ()
+    pronunciation_hints: dict[str, str] = field(default_factory=dict)
+    preferred_styles: tuple[str, ...] = ("natural", "creator")
     metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 

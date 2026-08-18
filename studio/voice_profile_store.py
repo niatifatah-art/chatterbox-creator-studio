@@ -1,73 +1,84 @@
 from __future__ import annotations
 
 import json
-import re
-from dataclasses import asdict, dataclass, field
+import shutil
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from studio.protocol import ArtifactRef, VoiceProfile, VoiceSource, VoiceSourceKind
+from studio.naming import safe_local_name
+from studio.protocol import ArtifactRef, EngineBinding, VoiceProfile, VoiceSource, VoiceSourceKind
 
 
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
+LEGACY_PROFILE_SCHEMA_VERSION = 1
 
-
-@dataclass(frozen=True, slots=True)
-class EngineVoiceBinding:
-    """A calibrated way to reproduce one stable voice on one engine."""
-
-    engine_id: str
-    model_id: str | None = None
-    model_revision: str | None = None
-    recipe_id: str | None = None
-    recipe_revision: int | None = None
-    style_recipes: dict[str, str] = field(default_factory=dict)
-    engine_voice_id: str | None = None
-    prompt_artifact: ArtifactRef | None = None
-    certified_languages: tuple[str, ...] = ()
-    quality_score: float | None = None
-    speaker_similarity_score: float | None = None
-    enabled: bool = True
-    metadata: dict[str, Any] = field(default_factory=dict)
-    schema_version: int = PROFILE_SCHEMA_VERSION
+# Compatibility import for callers/tests created during the v1 foundation. There is
+# now one canonical binding contract in studio.protocol.
+EngineVoiceBinding = EngineBinding
 
 
 @dataclass(frozen=True, slots=True)
 class StoredVoiceProfile:
+    """Persisted voice identity plus store timestamps.
+
+    Bindings, pronunciation hints and preferred styles live inside `VoiceProfile` in
+    schema v2. Read-only properties keep the v1 Python call sites compatible while we
+    migrate the UI/controller in stages.
+    """
+
     profile: VoiceProfile
-    bindings: tuple[EngineVoiceBinding, ...] = ()
-    pronunciation_hints: dict[str, str] = field(default_factory=dict)
-    preferred_styles: tuple[str, ...] = ("natural", "creator")
     created_at: str = ""
     updated_at: str = ""
     schema_version: int = PROFILE_SCHEMA_VERSION
 
-    def binding_for(self, engine_id: str) -> EngineVoiceBinding | None:
+    @property
+    def bindings(self) -> tuple[EngineBinding, ...]:
+        return self.profile.engine_bindings
+
+    @property
+    def pronunciation_hints(self) -> dict[str, str]:
+        return self.profile.pronunciation_hints
+
+    @property
+    def preferred_styles(self) -> tuple[str, ...]:
+        return self.profile.preferred_styles
+
+    def binding_for(self, engine_id: str) -> EngineBinding | None:
         return next((binding for binding in self.bindings if binding.engine_id == engine_id and binding.enabled), None)
 
 
 class VoiceProfileStore:
     """Local, versioned voice identity store shared by Speech Core clients.
 
-    The store deliberately contains no ACE account names, social handles or
-    publishing metadata. Orchestrators own their account -> profile_id mapping.
+    Schema v2 has one source of truth: the `VoiceProfile` itself owns engine bindings,
+    pronunciation hints and preferred styles. The store owns only timestamps and file
+    migration. It deliberately contains no account/platform publishing metadata.
     """
 
     def __init__(self, directory: str | Path):
-        self.directory = Path(directory)
+        self.directory = Path(directory).expanduser().resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.backup_directory = self.directory.parent / "backups" / "voice-profiles-v1"
 
     @staticmethod
     def _safe_id(value: str) -> str:
-        clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", (value or "voice").strip()).strip("-._").lower()
-        return clean or "voice"
+        return safe_local_name(value, fallback="voice", casefold=True)
 
     def path_for(self, profile_id: str) -> Path:
         return self.directory / f"{self._safe_id(profile_id)}.json"
 
     def list_ids(self) -> tuple[str, ...]:
         return tuple(sorted(path.stem for path in self.directory.glob("*.json") if path.is_file()))
+
+    def list(self) -> tuple[StoredVoiceProfile, ...]:
+        rows: list[StoredVoiceProfile] = []
+        for profile_id in self.list_ids():
+            record = self.get(profile_id)
+            if record is not None:
+                rows.append(record)
+        return tuple(rows)
 
     @staticmethod
     def _artifact_from_dict(value: dict[str, Any] | None) -> ArtifactRef | None:
@@ -82,35 +93,54 @@ class VoiceProfileStore:
         return VoiceSource(**row)
 
     @classmethod
-    def _profile_from_dict(cls, value: dict[str, Any]) -> VoiceProfile:
-        row = dict(value or {})
-        row["source"] = cls._source_from_dict(row.get("source") or {})
-        if isinstance(row.get("supported_languages"), list):
-            row["supported_languages"] = tuple(row["supported_languages"])
-        if isinstance(row.get("engine_bindings"), list):
-            from studio.protocol import EngineBinding
-
-            row["engine_bindings"] = tuple(EngineBinding(**item) for item in row["engine_bindings"])
-        return VoiceProfile(**row)
-
-    @classmethod
-    def _binding_from_dict(cls, value: dict[str, Any]) -> EngineVoiceBinding:
+    def _binding_from_dict(cls, value: dict[str, Any]) -> EngineBinding:
         row = dict(value or {})
         if isinstance(row.get("prompt_artifact"), dict):
             row["prompt_artifact"] = cls._artifact_from_dict(row["prompt_artifact"])
-        if isinstance(row.get("certified_languages"), list):
-            row["certified_languages"] = tuple(row["certified_languages"])
-        return EngineVoiceBinding(**row)
+        for key in ("certified_languages", "preferred_languages"):
+            if isinstance(row.get(key), list):
+                row[key] = tuple(row[key])
+        return EngineBinding(**row)
 
     @classmethod
-    def _decode(cls, payload: dict[str, Any]) -> StoredVoiceProfile:
-        if int(payload.get("schema_version", 0)) != PROFILE_SCHEMA_VERSION:
-            raise ValueError("Unsupported voice profile schema version.")
+    def _profile_from_dict(cls, value: dict[str, Any]) -> VoiceProfile:
+        row = dict(value or {})
+        row["source"] = cls._source_from_dict(row.get("source") or {})
+        for key in ("supported_languages", "preferred_styles"):
+            if isinstance(row.get(key), list):
+                row[key] = tuple(row[key])
+        if isinstance(row.get("engine_bindings"), list):
+            row["engine_bindings"] = tuple(cls._binding_from_dict(item) for item in row["engine_bindings"])
+        row["pronunciation_hints"] = dict(row.get("pronunciation_hints") or {})
+        return VoiceProfile(**row)
+
+    @classmethod
+    def _decode_v2(cls, payload: dict[str, Any]) -> StoredVoiceProfile:
         return StoredVoiceProfile(
             profile=cls._profile_from_dict(payload["profile"]),
-            bindings=tuple(cls._binding_from_dict(item) for item in payload.get("bindings", [])),
-            pronunciation_hints=dict(payload.get("pronunciation_hints") or {}),
-            preferred_styles=tuple(payload.get("preferred_styles") or ("natural", "creator")),
+            created_at=str(payload.get("created_at") or ""),
+            updated_at=str(payload.get("updated_at") or ""),
+            schema_version=PROFILE_SCHEMA_VERSION,
+        )
+
+    @classmethod
+    def _decode_v1(cls, payload: dict[str, Any]) -> StoredVoiceProfile:
+        """Convert the foundation-era duplicate binding layout into schema v2."""
+
+        old_profile = cls._profile_from_dict(payload["profile"])
+        bindings: dict[str, EngineBinding] = {item.engine_id: item for item in old_profile.engine_bindings}
+        for item in payload.get("bindings", []):
+            if isinstance(item, dict):
+                binding = cls._binding_from_dict(item)
+                bindings[binding.engine_id] = binding
+        profile = replace(
+            old_profile,
+            engine_bindings=tuple(sorted(bindings.values(), key=lambda item: item.engine_id)),
+            pronunciation_hints=dict(payload.get("pronunciation_hints") or old_profile.pronunciation_hints),
+            preferred_styles=tuple(payload.get("preferred_styles") or old_profile.preferred_styles or ("natural", "creator")),
+        )
+        return StoredVoiceProfile(
+            profile=profile,
             created_at=str(payload.get("created_at") or ""),
             updated_at=str(payload.get("updated_at") or ""),
             schema_version=PROFILE_SCHEMA_VERSION,
@@ -118,30 +148,62 @@ class VoiceProfileStore:
 
     @staticmethod
     def _encode(record: StoredVoiceProfile) -> dict[str, Any]:
-        def clean(value: Any) -> Any:
-            if isinstance(value, tuple):
-                return [clean(item) for item in value]
-            if isinstance(value, list):
-                return [clean(item) for item in value]
-            if isinstance(value, dict):
-                return {str(key): clean(item) for key, item in value.items()}
-            if hasattr(value, "value"):
-                return value.value
-            return value
+        return {
+            "schema_version": PROFILE_SCHEMA_VERSION,
+            "profile": record.profile.to_dict(),
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+        }
 
-        return clean(asdict(record))
+    def _backup_v1(self, path: Path) -> Path:
+        self.backup_directory.mkdir(parents=True, exist_ok=True)
+        destination = self.backup_directory / path.name
+        if not destination.exists():
+            shutil.copy2(path, destination)
+        return destination
+
+    @staticmethod
+    def _write_payload(path: Path, payload: dict[str, Any]) -> None:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Path.replace() maps to an OS-level replacement on the same filesystem. The
+        # temporary file deliberately lives beside the destination.
+        tmp.replace(path)
+
+    def _read_payload(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Voice profile '{path.stem}' is unreadable.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Voice profile '{path.stem}' is invalid.")
+        return payload
 
     def get(self, profile_id: str) -> StoredVoiceProfile | None:
         path = self.path_for(profile_id)
         if not path.exists():
             return None
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Voice profile '{profile_id}' is unreadable.") from exc
-        if not isinstance(payload, dict):
-            raise ValueError(f"Voice profile '{profile_id}' is invalid.")
-        return self._decode(payload)
+        payload = self._read_payload(path)
+        version = int(payload.get("schema_version", 0))
+        if version == PROFILE_SCHEMA_VERSION:
+            return self._decode_v2(payload)
+        if version == LEGACY_PROFILE_SCHEMA_VERSION:
+            record = self._decode_v1(payload)
+            self._backup_v1(path)
+            self._write_payload(path, self._encode(record))
+            return record
+        raise ValueError(f"Unsupported voice profile schema version: {version}.")
+
+    def migrate_all(self) -> int:
+        """Migrate readable v1 profile files in place, returning the number changed."""
+
+        migrated = 0
+        for path in sorted(self.directory.glob("*.json")):
+            payload = self._read_payload(path)
+            if int(payload.get("schema_version", 0)) == LEGACY_PROFILE_SCHEMA_VERSION:
+                self.get(path.stem)
+                migrated += 1
+        return migrated
 
     def save(self, record: StoredVoiceProfile) -> StoredVoiceProfile:
         now = datetime.now(timezone.utc).isoformat()
@@ -149,17 +211,12 @@ class VoiceProfileStore:
         created_at = record.created_at or (existing.created_at if existing else now)
         normalized = StoredVoiceProfile(
             profile=record.profile,
-            bindings=record.bindings,
-            pronunciation_hints=dict(record.pronunciation_hints),
-            preferred_styles=tuple(record.preferred_styles),
             created_at=created_at,
             updated_at=now,
             schema_version=PROFILE_SCHEMA_VERSION,
         )
         path = self.path_for(record.profile.profile_id)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._encode(normalized), indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        self._write_payload(path, self._encode(normalized))
         return normalized
 
     def create(
@@ -174,6 +231,9 @@ class VoiceProfileStore:
         supported_languages: tuple[str, ...] = (),
         default_style: str = "creator",
         consistency_locked: bool = True,
+        pronunciation_hints: dict[str, str] | None = None,
+        preferred_styles: tuple[str, ...] = ("natural", "creator"),
+        metadata: dict[str, Any] | None = None,
     ) -> StoredVoiceProfile:
         safe_id = self._safe_id(profile_id)
         if self.path_for(safe_id).exists():
@@ -191,38 +251,24 @@ class VoiceProfileStore:
             default_style=(default_style or "creator").strip().lower(),
             consistency_locked=bool(consistency_locked),
             supported_languages=tuple(supported_languages),
+            pronunciation_hints=dict(pronunciation_hints or {}),
+            preferred_styles=tuple(preferred_styles),
+            metadata=dict(metadata or {}),
         )
         return self.save(StoredVoiceProfile(profile=profile))
 
-    def add_binding(self, profile_id: str, binding: EngineVoiceBinding, *, promote_revision: bool = False) -> StoredVoiceProfile:
+    def add_binding(self, profile_id: str, binding: EngineBinding, *, promote_revision: bool = False) -> StoredVoiceProfile:
         record = self.get(profile_id)
         if record is None:
             raise FileNotFoundError(f"Voice profile '{profile_id}' does not exist.")
         bindings = [item for item in record.bindings if item.engine_id != binding.engine_id]
         bindings.append(binding)
-        profile = record.profile
-        if promote_revision:
-            profile = VoiceProfile(
-                profile_id=profile.profile_id,
-                display_name=profile.display_name,
-                source=profile.source,
-                revision=profile.revision + 1,
-                default_style=profile.default_style,
-                consistency_locked=profile.consistency_locked,
-                engine_bindings=profile.engine_bindings,
-                supported_languages=profile.supported_languages,
-                metadata=dict(profile.metadata),
-                schema_version=profile.schema_version,
-            )
-        return self.save(
-            StoredVoiceProfile(
-                profile=profile,
-                bindings=tuple(sorted(bindings, key=lambda item: item.engine_id)),
-                pronunciation_hints=record.pronunciation_hints,
-                preferred_styles=record.preferred_styles,
-                created_at=record.created_at,
-            )
+        profile = replace(
+            record.profile,
+            engine_bindings=tuple(sorted(bindings, key=lambda item: item.engine_id)),
+            revision=record.profile.revision + (1 if promote_revision else 0),
         )
+        return self.save(StoredVoiceProfile(profile=profile, created_at=record.created_at))
 
     def set_pronunciation_hint(self, profile_id: str, phrase: str, spoken_as: str) -> StoredVoiceProfile:
         record = self.get(profile_id)
@@ -234,12 +280,23 @@ class VoiceProfileStore:
         if not key or not value:
             raise ValueError("Pronunciation phrase and spoken form are required.")
         hints[key] = value
+        profile = replace(record.profile, pronunciation_hints=hints)
+        return self.save(StoredVoiceProfile(profile=profile, created_at=record.created_at))
+
+    def update_display_name(self, profile_id: str, display_name: str) -> StoredVoiceProfile:
+        record = self.get(profile_id)
+        if record is None:
+            raise FileNotFoundError(f"Voice profile '{profile_id}' does not exist.")
+        label = (display_name or "Voice").strip() or "Voice"
+        return self.save(StoredVoiceProfile(profile=replace(record.profile, display_name=label), created_at=record.created_at))
+
+    def update_metadata(self, profile_id: str, metadata: dict[str, Any]) -> StoredVoiceProfile:
+        record = self.get(profile_id)
+        if record is None:
+            raise FileNotFoundError(f"Voice profile '{profile_id}' does not exist.")
         return self.save(
             StoredVoiceProfile(
-                profile=record.profile,
-                bindings=record.bindings,
-                pronunciation_hints=hints,
-                preferred_styles=record.preferred_styles,
+                profile=replace(record.profile, metadata=dict(metadata)),
                 created_at=record.created_at,
             )
         )
