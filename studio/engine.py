@@ -76,7 +76,14 @@ def _seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-class ChatterboxEngine:
+class NativeChatterboxEngine:
+    """Native Chatterbox implementation owned by the Speech Core adapter.
+
+    Product/controller code should construct `ChatterboxEngine` below, which is now a
+    compatibility factory backed by Speech Core. Keeping the native class explicit
+    prevents Core from recursively re-entering its own compatibility facade.
+    """
+
     def __init__(self, output_dir: str | Path):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +102,6 @@ class ChatterboxEngine:
         return self._model_id if self.loaded else None
 
     def set_device(self, device: str, label: str | None = None) -> None:
-        """Switch compute backend safely; active model memory is released first."""
         normalized = str(device or "cpu").lower()
         if normalized not in {"cpu", "cuda", "mps"}:
             raise ValueError(f"Unsupported compute device '{device}'.")
@@ -105,7 +111,6 @@ class ChatterboxEngine:
         self.device_label = label or normalized.upper()
 
     def set_model_path(self, model_id: str, path: str | Path | None) -> None:
-        """Pin a model to a local snapshot so generation never silently updates it."""
         if model_id not in MODEL_SPECS:
             raise ValueError(f"Unknown model '{model_id}'.")
         new_path = Path(path).resolve() if path else None
@@ -133,7 +138,6 @@ class ChatterboxEngine:
         return self._adapter
 
     def load_model(self, model_id: str, progress_callback: ProgressCallback | None = None) -> None:
-        """Load the selected model into memory without generating audio."""
         with self._lock:
             if progress_callback:
                 progress_callback("Loading model into memory…", None, None)
@@ -237,8 +241,6 @@ class ChatterboxEngine:
             if not any(isinstance(segment, Speech) for segment in segments):
                 raise ValueError("Add some text to synthesize.")
 
-        # Count only actual synthesis chunks. Digital pauses are instant and should
-        # not make the progress indicator look slower than the model really is.
         planned_chunks = 0
         for segment in segments:
             if not isinstance(segment, Speech):
@@ -360,3 +362,17 @@ class ChatterboxEngine:
             return None
         metadata = path.with_suffix(".json")
         return metadata if metadata.exists() else None
+
+
+class ChatterboxEngine:
+    """Backward-compatible constructor for the Core-backed controller facade.
+
+    Existing app/product/CLI code can keep importing this name during Phase 3. The
+    native implementation above is private to Speech Core. The lazy factory avoids a
+    module import cycle while keeping all current controller call sites unchanged.
+    """
+
+    def __new__(cls, output_dir: str | Path):
+        from .core_engine import CoreGenerationEngine
+
+        return CoreGenerationEngine(output_dir)
