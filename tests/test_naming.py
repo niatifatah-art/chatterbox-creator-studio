@@ -10,7 +10,8 @@ def test_safe_local_name_preserves_non_latin_identity():
 
 def test_safe_local_name_avoids_windows_reserved_devices_and_trailing_punctuation():
     assert safe_local_name("CON").casefold() != "con"
-    assert safe_local_name("nul.txt") == "nul.txt"  # helper receives stems; extension policy belongs to caller
+    assert safe_local_name("nul.txt").casefold() != "nul.txt"
+    assert safe_local_name("COM1.log").casefold() != "com1.log"
     assert not safe_local_name("hello. ").endswith((".", " "))
 
 
