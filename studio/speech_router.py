@@ -3,7 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from studio.engine_registry import ENGINE_MANIFESTS, EngineManifest
-from studio.protocol import Capability, Priority
+from studio.protocol import Capability, EngineStatus, Priority, SpeechErrorKind
+
+
+class RouteError(ValueError):
+    """Routing failure with a stable machine-readable kind for RPC clients."""
+
+    def __init__(self, kind: SpeechErrorKind, message: str):
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +51,15 @@ def _requirements(request: RouteRequest) -> tuple[Capability, ...]:
     return tuple(required)
 
 
-def _candidate_score(manifest: EngineManifest, request: RouteRequest) -> tuple[int, int, str]:
+def _candidate_score(manifest: EngineManifest, request: RouteRequest) -> tuple[int, int, int, str]:
+    """Small pre-certification routing score with no engine-name special cases.
+
+    Real Best/Auto ranking will consume certification measurements. Until then the
+    router only rewards installed state, a compatible consistency pin and broad
+    resource preferences. Adding/replacing an engine therefore does not require a
+    new `if engine_id == ...` branch here.
+    """
+
     score = 0
     installed = manifest.engine_id in request.installed_engines
     if installed:
@@ -58,18 +74,12 @@ def _candidate_score(manifest: EngineManifest, request: RouteRequest) -> tuple[i
         score += {"ultra_light": 40, "light": 30, "medium": 10, "heavy": 0}.get(manifest.resource_tier, 0)
     elif request.priority == Priority.FAST:
         score += {"ultra_light": 30, "light": 25, "medium": 20, "heavy": 5}.get(manifest.resource_tier, 0)
-    elif request.priority == Priority.BEST:
-        if manifest.engine_id in {"qwen3-tts", "chatterbox-v3"}:
-            score += 30
-    else:
-        if manifest.engine_id == "chatterbox-v3" and request.language.lower().startswith("ar"):
-            score += 35
-        if manifest.engine_id == "faster-whisper" and request.capability == Capability.TRANSCRIBE:
-            score += 25
-        if manifest.engine_id == "kokoro" and request.needs_ready_voice and request.weak_cpu:
-            score += 25
 
-    return score, 1 if installed else 0, manifest.engine_id
+    # Prefer supported/certified routes over discovery-only catalogue entries. The
+    # caller still receives a catalogued route when no supported implementation can
+    # satisfy the capability at all (for example Voice Design before certification).
+    supported_rank = 1 if manifest.status == EngineStatus.SUPPORTED else 0
+    return score, supported_rank, 1 if installed else 0, manifest.engine_id
 
 
 def route(request: RouteRequest) -> RouteDecision:
@@ -79,11 +89,17 @@ def route(request: RouteRequest) -> RouteDecision:
         try:
             manifest = ENGINE_MANIFESTS[request.engine_override]
         except KeyError as exc:
-            raise ValueError(f"Unknown engine override: {request.engine_override}") from exc
+            raise RouteError(SpeechErrorKind.INVALID_ARGUMENT, f"Unknown engine override: {request.engine_override}") from exc
         if not manifest.supports(*requirements):
-            raise ValueError(f"{manifest.display_name} does not support the requested speech capability.")
+            raise RouteError(
+                SpeechErrorKind.INVALID_ARGUMENT,
+                f"{manifest.display_name} does not support the requested speech capability.",
+            )
         if not _supports_language(manifest, request.language):
-            raise ValueError(f"{manifest.display_name} does not support language '{request.language}'.")
+            raise RouteError(
+                SpeechErrorKind.INVALID_ARGUMENT,
+                f"{manifest.display_name} does not support language '{request.language}'.",
+            )
         return RouteDecision(
             engine_id=manifest.engine_id,
             reason="Manual engine override.",
@@ -96,22 +112,17 @@ def route(request: RouteRequest) -> RouteDecision:
         if manifest.supports(*requirements) and _supports_language(manifest, request.language)
     ]
     if not candidates:
-        raise ValueError("No compatible speech engine is registered for this request.")
+        raise RouteError(
+            SpeechErrorKind.NO_COMPATIBLE_ENGINE,
+            "No compatible speech engine is registered for this request.",
+        )
 
-    # Catalogued engines are visible for discovery/manual install, but they cannot
-    # displace a certified route merely because a heuristic gives them a higher
-    # score. We fall back to catalogued candidates only when no certified engine
-    # can satisfy the requested capability at all (for example Voice Design before
-    # its first engine is certified).
-    supported = [manifest for manifest in candidates if manifest.status == "supported"]
+    supported = [manifest for manifest in candidates if manifest.status == EngineStatus.SUPPORTED]
     routable = supported or candidates
 
-    # A consistency-pinned engine is allowed only when it remains compatible. If
-    # it is catalogued rather than certified, keep it only when the caller asked
-    # explicitly for consistency and no certified route can preserve that identity.
     if request.consistency_engine:
         pinned = next((manifest for manifest in candidates if manifest.engine_id == request.consistency_engine), None)
-        if pinned is not None and pinned.status == "supported":
+        if pinned is not None and pinned.status == EngineStatus.SUPPORTED:
             routable = [pinned, *[manifest for manifest in routable if manifest.engine_id != pinned.engine_id]]
 
     routable.sort(key=lambda manifest: _candidate_score(manifest, request), reverse=True)
@@ -123,10 +134,10 @@ def route(request: RouteRequest) -> RouteDecision:
         reason_parts.append(f"supports {request.language}")
     if request.priority == Priority.LIGHTWEIGHT or request.weak_cpu:
         reason_parts.append("fits the low-resource preference")
-    if winner.status != "supported":
+    if winner.status != EngineStatus.SUPPORTED:
         reason_parts.append("is the only compatible catalogued route and still needs local certification")
     if not reason_parts:
-        reason_parts.append("best compatible certified route")
+        reason_parts.append("best compatible supported route")
 
     return RouteDecision(
         engine_id=winner.engine_id,
