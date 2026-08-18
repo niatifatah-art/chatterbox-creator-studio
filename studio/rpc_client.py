@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from studio.protocol import (
+    ArtifactRef,
     MIN_RPC_PROTOCOL_VERSION,
     MIN_SPEECH_SCHEMA_VERSION,
     RPC_PROTOCOL_VERSION,
     SPEECH_SCHEMA_VERSION,
     SpeechErrorKind,
+    SpeechSynthesisRequest,
 )
 
 
@@ -210,4 +212,39 @@ class SpeechRpcClient:
         result = self.call("voices.get", {"profile_id": profile_id})
         if not isinstance(result, dict):
             raise RuntimeError("Speech Core voice response is invalid.")
+        return result
+
+    def synthesize(self, request: SpeechSynthesisRequest | dict[str, Any]) -> dict[str, Any]:
+        """Synthesize through the public capability boundary.
+
+        The returned dictionary is the serialized SpeechArtifact. Keeping this client
+        transport-facing avoids forcing external projects to import engine/runtime code.
+        """
+
+        params = request.to_dict() if isinstance(request, SpeechSynthesisRequest) else dict(request)
+        result = self.call("speech.synthesize", params)
+        if not isinstance(result, dict) or not isinstance(result.get("audio"), dict):
+            raise RuntimeError("Speech Core synthesis response is invalid.")
+        return result
+
+    def materialize(
+        self,
+        artifact: ArtifactRef | dict[str, Any],
+        destination: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Copy a logical Core artifact to an explicit caller-owned path."""
+
+        artifact_payload = artifact.to_dict() if isinstance(artifact, ArtifactRef) else dict(artifact)
+        result = self.call(
+            "artifacts.materialize",
+            {
+                "artifact": artifact_payload,
+                "destination": str(Path(destination).expanduser()),
+                "overwrite": bool(overwrite),
+            },
+        )
+        if not isinstance(result, dict) or not result.get("materialized"):
+            raise RuntimeError("Speech Core artifact materialization response is invalid.")
         return result
