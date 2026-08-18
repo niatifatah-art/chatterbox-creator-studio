@@ -41,6 +41,26 @@ def test_rpc_synthesis_missing_model_is_structured_and_never_turns_into_download
     assert response["error"]["data"]["model_id"] == "multilingual-v3"
 
 
+def test_rpc_rejects_malformed_voice_revision_as_invalid_argument(tmp_path: Path):
+    server = SpeechRpcServer(RpcContext(tmp_path / "speech-core"))
+    for request_id, value in ((10, "not-an-integer"), (11, 0), (12, -3)):
+        response = server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "speech.synthesize",
+                "params": {
+                    "text": "Hello",
+                    "voice_profile_id": "voice",
+                    "voice_revision": value,
+                },
+            }
+        )
+        assert response is not None
+        assert response["error"]["code"] == -32602
+        assert response["error"]["data"]["kind"] == SpeechErrorKind.INVALID_ARGUMENT.value
+
+
 def test_public_client_surfaces_synthesis_semantic_error_from_real_sidecar(tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[1]
     data = tmp_path / "speech-core"
@@ -100,3 +120,24 @@ def test_artifact_materialization_copies_to_caller_path_without_exposing_interna
     )
     assert second is not None
     assert second["error"]["data"]["kind"] == SpeechErrorKind.INVALID_ARGUMENT.value
+
+
+def test_artifact_materialization_reports_generic_invalid_argument_for_tampered_ref(tmp_path: Path):
+    context = RpcContext(tmp_path / "speech-core")
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    ref = context.artifacts.register_file(source, artifact_id="generated", mime_type="audio/wav")
+    payload = ref.to_dict()
+    payload["artifact_id"] = "different"
+
+    response = SpeechRpcServer(context).handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "artifacts.materialize",
+            "params": {"artifact": payload, "destination": str(tmp_path / "caller.wav")},
+        }
+    )
+    assert response is not None
+    assert response["error"]["code"] == -32602
+    assert response["error"]["data"]["kind"] == SpeechErrorKind.INVALID_ARGUMENT.value
