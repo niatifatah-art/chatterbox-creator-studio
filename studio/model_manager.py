@@ -101,8 +101,6 @@ def set_hf_offline(enabled: bool) -> None:
     else:
         os.environ.pop("HF_HUB_OFFLINE", None)
 
-    # huggingface_hub reads the environment into constants at import time. If it
-    # has already been imported, keep the runtime constant in sync too.
     module = sys.modules.get("huggingface_hub.constants")
     if module is not None and hasattr(module, "HF_HUB_OFFLINE"):
         module.HF_HUB_OFFLINE = bool(enabled)
@@ -111,9 +109,9 @@ def set_hf_offline(enabled: bool) -> None:
 class LocalModelManager:
     """Friendly local model state on top of the Hugging Face cache.
 
-    The manager records the exact snapshot selected by this app. Generation can
-    then load that local snapshot directly, so a newer upstream revision never
-    silently replaces a creator's working model.
+    The manager records the exact snapshot selected by this app. Generation can then
+    load that snapshot directly, so a newer upstream revision never silently replaces
+    a creator's working model.
     """
 
     def __init__(self, state_path: str | Path):
@@ -183,8 +181,6 @@ class LocalModelManager:
         spec = MODEL_DOWNLOAD_SPECS[model_id]
         snapshot, revision = self._snapshot_from_cache(spec)
         if snapshot is not None and revision:
-            # Import an existing Hugging Face cache exactly once. From this point
-            # on the app follows this selected snapshot, not a moving refs/main.
             self._select_snapshot(model_id, snapshot, revision)
         return snapshot, revision
 
@@ -213,6 +209,36 @@ class LocalModelManager:
             "selected_at": _utc_now(),
         }
         self._save_state(state)
+
+    def select_snapshot(
+        self,
+        model_id: str,
+        path: str | Path,
+        *,
+        revision: str | None = None,
+    ) -> LocalModelStatus:
+        """Select an already-present snapshot without downloading it.
+
+        This is the explicit bridge used by controllers/tests that already resolved a
+        model snapshot themselves. Recording that selection in Core state keeps routing,
+        provenance and execution on the same exact revision instead of maintaining two
+        competing notions of which model is installed.
+
+        Phase 4 will generalize this beyond Chatterbox and add candidate/rollback state;
+        for now this method deliberately does not infer trust from an arbitrary path.
+        Callers are responsible for selecting assets they obtained through the existing
+        managed-model workflow.
+        """
+        if model_id not in MODEL_DOWNLOAD_SPECS:
+            raise ValueError(f"Unknown model '{model_id}'.")
+        snapshot = Path(path).expanduser().resolve()
+        if not snapshot.is_dir():
+            raise FileNotFoundError(f"Local model snapshot not found: {snapshot}")
+        resolved_revision = str(revision or snapshot.name).strip()
+        if not resolved_revision:
+            raise ValueError("Model revision is required when selecting a snapshot.")
+        self._select_snapshot(model_id, snapshot, resolved_revision)
+        return self.status(model_id)
 
     def _forget_model(self, model_id: str) -> None:
         state = self._load_state()
@@ -283,8 +309,6 @@ class LocalModelManager:
         try:
             local = Path(snapshot_download(**kwargs))
         except Exception as exc:
-            # Match the upstream Turbo/Nano resilience: if an Xet backend error
-            # occurs, retry over the standard HTTP/LFS path.
             if "xet" in str(exc).lower() or "hex hash" in str(exc).lower():
                 import huggingface_hub.constants as hf_constants
 
@@ -318,8 +342,6 @@ class LocalModelManager:
         current = self.status(model_id)
         if not current.installed or offline:
             return current
-        # A user may have just turned Offline mode off in the UI without saving
-        # settings yet. Keep the Hub runtime flag aligned with the requested action.
         set_hf_offline(False)
         spec = MODEL_DOWNLOAD_SPECS[model_id]
         try:
@@ -343,19 +365,11 @@ class LocalModelManager:
     def update(self, model_id: str, *, offline: bool = False, progress: ProgressCallback | None = None) -> LocalModelStatus:
         if offline:
             raise RuntimeError("Turn off Offline mode before checking or downloading model updates.")
-        # Refresh the tracked remote ref while reusing unchanged cached blobs.
-        # This downloads only what the newly selected snapshot needs; it does not
-        # blindly re-fetch every model file.
         return self.download(model_id, refresh=True, force_files=False, offline=False, progress=progress)
 
     @staticmethod
     def _safe_fallback_delete_snapshot(cache: Path, snapshot: Path, revision: str) -> bool:
-        """Delete only one selected snapshot if the Hub cache helper is unavailable.
-
-        This deliberately leaves shared blobs behind rather than risking another
-        application's snapshots. The normal product environment has
-        huggingface_hub installed and uses its reference-aware deletion strategy.
-        """
+        """Delete only one selected snapshot if the Hub cache helper is unavailable."""
         snapshots_root = (cache / "snapshots").resolve()
         try:
             resolved_snapshot = snapshot.resolve()
@@ -389,14 +403,7 @@ class LocalModelManager:
         return removed
 
     def remove(self, model_id: str) -> bool:
-        """Remove only the exact model revision selected by this app.
-
-        Hugging Face's cache is shared by libraries and applications. Deleting the
-        whole repository cache can therefore break unrelated local workflows,
-        especially for the multi-model ResembleAI/chatterbox repository. The Hub's
-        revision-aware deletion strategy removes the selected snapshot and only
-        blobs no longer referenced by another cached revision.
-        """
+        """Remove only the exact model revision selected by this app."""
         if model_id not in MODEL_DOWNLOAD_SPECS:
             return False
         status = self.status(model_id)
@@ -429,8 +436,6 @@ class LocalModelManager:
         except ImportError:
             removed = self._safe_fallback_delete_snapshot(resolved_cache, resolved_snapshot, status.revision)
         except Exception as exc:
-            # A corrupted global Hub cache should not tempt the app into a broad
-            # recursive delete. Fall back to deleting only the selected snapshot.
             try:
                 removed = self._safe_fallback_delete_snapshot(resolved_cache, resolved_snapshot, status.revision)
             except Exception:
