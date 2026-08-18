@@ -88,7 +88,7 @@ def test_corrupt_legacy_metadata_falls_back_to_audio_analysis(tmp_path: Path):
     assert "path" not in analysis
 
 
-def test_rename_changes_display_name_but_keeps_stable_profile_id(tmp_path: Path):
+def test_rename_changes_display_name_but_keeps_stable_profile_id_and_old_id_alias(tmp_path: Path):
     voices_dir = tmp_path / "data" / "voices"
     source = tmp_path / "source.wav"
     _write_wav(source)
@@ -105,7 +105,12 @@ def test_rename_changes_display_name_but_keeps_stable_profile_id(tmp_path: Path)
     assert after.profile.profile_id == profile_id
     assert after.profile.display_name == "New-Name"
     assert library.path_for(renamed) is not None
-    assert library.path_for(name) is None
+
+    # Legacy projects may still have stored the old name. Because the immutable
+    # profile ID originated from that name, the facade keeps it as a compatibility
+    # alias even though only the new display name appears in the picker.
+    assert name not in library.list()
+    assert library.path_for(name) is not None
 
 
 def test_duplicate_owns_an_independent_artifact_and_delete_preserves_original(tmp_path: Path):
