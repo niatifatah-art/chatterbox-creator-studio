@@ -2,8 +2,8 @@
 
 Status labels:
 
-- ✅ Done / merged and tested
-- 🟡 In progress / not merged yet
+- ✅ Done / merged or merge-ready with all required gates green
+- 🟡 In progress / not yet fully gated
 - ⬜ Planned
 - 🧪 Catalogued / experimental, not Auto-routable
 
@@ -38,19 +38,17 @@ Delivered in PR #11:
 - non-destructive legacy voice migration;
 - portable `.voicepack` export/import foundation with archive/hash/conflict/rollback validation.
 
-The legacy `data/voices` mirror remains only because the current Gradio controller still needs a direct reference path. Phase 3 removes it after UI/Core parity.
+The legacy `data/voices` mirror remains only as a compatibility surface for the current Gradio-era name/path UI and old stored references. Canonical identity/reference ownership is already in Speech Core. The mirror is removed only when no shipped compatibility path still consumes it.
 
-## Phase 2 — Speech Core executes Chatterbox synthesis 🟡
+## Phase 2 — Speech Core executes Chatterbox synthesis ✅
 
-Goal: prove the reusable boundary with the already-working engine before adding any new model family.
-
-Implemented on PR #12:
+Delivered in PR #12 and merged to `main`:
 
 - `SpeechSynthesisService` around `SpeechSynthesisRequest`;
 - canonical Voice Profile + logical reference resolution;
 - route selection and exact selected model-snapshot provenance;
 - no implicit model download during synthesis;
-- V3/Turbo/Nano execute through the existing proven Chatterbox engine behind Core;
+- V3/Turbo/Nano execute through the proven Chatterbox implementation behind Core;
 - internal compatibility settings preserve seed, pauses, Raw mode, chunking, speed and current tuning without polluting the public semantic protocol;
 - `SpeechArtifact` with logical audio ref and privacy-safe provenance/metadata;
 - public `SpeechRpcClient.synthesize()` and explicit artifact materialization;
@@ -60,65 +58,69 @@ Implemented on PR #12:
 - artifact identity canonicalization/integrity hardening;
 - model-free synthesis/RPC/error/cancellation/raw-mode/revision-guard tests;
 - real V3/Turbo/Nano Speech Core smoke matrix;
-- Nano direct-path migration parity guard.
+- Nano native-vs-Core migration parity guard.
 
-Current merge gate:
+All Phase 2 Linux/Windows/UI/real-model gates passed before merge.
 
-- Linux core ✅
-- Windows core ✅
+## Phase 3 — Existing product generation adopts Speech Core ✅
+
+Goal achieved in PR #13: one product synthesis owner without forcing the final visual redesign first.
+
+Delivered:
+
+- the former direct implementation is explicit `NativeChatterboxEngine`, used only behind Speech Core and in intentional parity tests;
+- controller-facing `ChatterboxEngine(...)` is a temporary Core-backed compatibility facade, so existing Create/Batch/Compare/CLI call sites no longer own synthesis directly;
+- saved legacy voice paths are resolved back to canonical Voice Profiles before generation;
+- arbitrary CLI reference WAVs receive short-lived Core profile/artifact identities and are cleaned afterwards;
+- one process-owned native engine is reused inside the facade so Best-of/retries/Batch/Compare preserve loaded-model performance;
+- current technical controls flow through internal execution settings while the public speech contract stays semantic;
+- current WAV/JSON history/output behavior is preserved through an internal migration callback while public `SpeechArtifact` remains privacy-safe;
+- explicit legacy `set_model_path` now synchronizes the exact selected snapshot into Core model state;
+- model manager gained an explicit `select_snapshot()` bridge for already-managed local revisions;
+- reliability and Batch depend on a structural generation contract rather than the Chatterbox class;
+- optional-helper smoke explicitly installs/selects Nano before synthesis, preserving the invariant that generation never starts a large download silently;
+- explicit native Nano parity remains as a migration guard; normal product construction is Core-backed.
+
+Merge gate passed on the final code head before documentation-only status updates:
+
+- Linux model-free Core ✅
+- Windows model-free Core ✅
 - browser UI E2E ✅
 - Windows UI smoke ✅
-- optional helper smoke ✅
+- optional Nano + Faster-Whisper helper smoke ✅
 - real V3/Turbo/Nano Speech Core smoke ✅
-- docs reviewed/updated on this PR
-- final diff/privacy/backwards-compatibility review required before merge
+- product output/history/seed/pause contracts preserved ✅
+- no new provider branches added to UI/controller ✅
 
-The UI is **not** cut over in this phase. The old direct path remains available until Phase 3 proves creator-workflow parity.
-
-## Phase 3 — UI adopts Core; duplicate synthesis removed ⬜
-
-Goal: one generation implementation.
-
-Work:
-
-- point current Create/Batch/Compare generation at Speech Core without changing expected user behavior;
-- carry current technical controls through internal execution settings while the legacy UI exists;
-- preserve model download consent, progress, stop/cancellation, project/history and output behavior;
-- run old vs Core parity where useful;
-- remove direct new-engine branches from UI/controller by rule;
-- remove the duplicate direct synthesis path and temporary voice-file mirror only after parity is green;
-- keep compatibility adapters only for stored project/recipe data.
-
-Merge gate:
-
-- one synthesis service owns generation;
-- UI/CLI/public client consume it;
-- V3/Turbo/Nano real model smokes remain green;
-- Create/Batch/Compare browser workflows remain green;
-- no data loss for existing voices/projects.
+Temporary compatibility code remains only where the current Gradio-era interface still speaks in names/paths. It is not a second synthesis implementation and must not become an extension point for new engines.
 
 ## Phase 4 — Generic Engine / Runtime / Model Manager ⬜
 
-Goal: make engine replacement/addition safe and boring.
+Goal: make engine replacement/addition safe, explicit and boring before integrating Kokoro/Qwen.
 
 Work:
 
-- generalize Chatterbox-specific `LocalModelManager` source/delete rules;
-- separate engine route, runtime environment and model asset lifecycle;
-- isolated runtimes where dependency families conflict;
-- reuse shared Hugging Face cache/snapshots;
-- select retained immutable revisions, including the exact revision required by a pinned voice binding;
-- preflight disk/hardware/license metadata;
-- explicit install/verify/retry/remove/update/repair/rollback jobs;
-- runtime/model versions independently visible in diagnostics;
-- app can open with zero heavy engines/models installed.
+- replace Chatterbox-specific model-source/download/removal tables with generic engine/runtime/model manifests;
+- keep engine route, runtime environment and model asset lifecycle separate;
+- support isolated runtimes where dependency families conflict;
+- reuse shared Hugging Face cache/snapshots instead of duplicating multi-GB files;
+- retain/select immutable revisions, including the exact revision required by a pinned Voice Profile;
+- represent install state independently from catalog/certification state;
+- add disk/hardware/license/source preflight metadata;
+- explicit install/verify/retry/remove/update/repair/rollback operations;
+- keep a working revision available while a candidate update is tested;
+- expose runtime/model versions in diagnostics;
+- prepare the product shell to open with zero heavy speech engines/models installed;
+- reduce CI so UI/model-free jobs do not need the full ML stack when it is unnecessary.
 
 Merge gate:
 
 - no full shared-cache deletion;
-- old working model stays usable while a candidate update is tested;
+- old working model stays usable while a candidate update is validated;
 - missing/failed/corrupt model has a clear recovery path;
-- no large download occurs implicitly.
+- runtime and model revisions remain independently inspectable;
+- no large download occurs implicitly;
+- existing Chatterbox V3/Turbo/Nano Core/product smokes remain green.
 
 ## Phase 5 — Kokoro integration 🧪
 
