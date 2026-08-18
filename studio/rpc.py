@@ -253,13 +253,22 @@ def _parse_synthesis_request(params: dict[str, Any]) -> SpeechSynthesisRequest:
     if not isinstance(metadata, dict):
         raise RpcError(-32602, "metadata must be a JSON object.", kind=SpeechErrorKind.INVALID_ARGUMENT)
 
+    voice_revision: int | None = None
+    if params.get("voice_revision") is not None:
+        try:
+            voice_revision = int(params["voice_revision"])
+        except (TypeError, ValueError) as exc:
+            raise RpcError(-32602, "voice_revision must be an integer.", kind=SpeechErrorKind.INVALID_ARGUMENT) from exc
+        if voice_revision < 1:
+            raise RpcError(-32602, "voice_revision must be at least 1.", kind=SpeechErrorKind.INVALID_ARGUMENT)
+
     return SpeechSynthesisRequest(
         text=str(params.get("text") or ""),
         voice_profile_id=str(params.get("voice_profile_id") or ""),
         language=str(params.get("language") or "auto"),
         style=str(params.get("style") or "auto"),
         priority=priority,
-        voice_revision=int(params["voice_revision"]) if params.get("voice_revision") is not None else None,
+        voice_revision=voice_revision,
         engine_override=str(params["engine_override"]) if params.get("engine_override") else None,
         events=tuple(events),
         pronunciation_hints=dict(hints),
@@ -315,7 +324,10 @@ def _artifact_materialize(context: RpcContext, params: dict[str, Any]) -> dict[s
     except FileNotFoundError as exc:
         raise RpcError(-32004, "Artifact is missing.", kind=SpeechErrorKind.NOT_FOUND) from exc
     except ValueError as exc:
-        raise RpcError(-32022, "Artifact failed validation.", kind=SpeechErrorKind.VOICE_REFERENCE_MISSING) from exc
+        # This is a generic artifact boundary, not a voice-reference-only path.
+        # Until the protocol grows a dedicated artifact-integrity error kind, expose
+        # invalid/tampered/non-canonical references as a stable invalid argument.
+        raise RpcError(-32602, "Artifact failed validation.", kind=SpeechErrorKind.INVALID_ARGUMENT) from exc
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
     return {"artifact_id": artifact.artifact_id, "materialized": True, "size_bytes": destination.stat().st_size}
