@@ -141,7 +141,15 @@ class SpeechRpcClient:
         return result
 
     def protocol_info(self) -> dict[str, Any]:
-        result = self.call("protocol.info")
+        try:
+            result = self.call("protocol.info")
+        except SpeechRpcClientError as exc:
+            # PR #9-era servers already returned protocol/schema versions from
+            # `health` but predated the dedicated discovery method. Keep that one
+            # additive transition compatible instead of forcing lockstep upgrades.
+            if exc.code != -32601:
+                raise
+            result = self.health()
         if not isinstance(result, dict):
             raise RuntimeError("Speech Core protocol response is invalid.")
         return result
