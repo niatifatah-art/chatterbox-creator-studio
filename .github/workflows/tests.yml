@@ -2,7 +2,13 @@ name: core-tests
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  group: core-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
