@@ -16,6 +16,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "compute_preference": "Auto",
     "offline_mode": False,
     "auto_download_models": False,
+    # Privacy is a product default, not a documentation promise. Analytics is disabled
+    # unless the user explicitly opts in. Speech text, recordings, paths and voice
+    # references must never be analytics properties even when telemetry is enabled.
+    "telemetry_enabled": False,
     "exaggeration": 0.65,
     "cfg_weight": 0.30,
     "temperature": 0.80,
