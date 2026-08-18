@@ -15,11 +15,7 @@ PROFILE_SCHEMA_VERSION = 1
 
 @dataclass(frozen=True, slots=True)
 class EngineVoiceBinding:
-    """A calibrated way to reproduce one voice on one engine.
-
-    The public VoiceProfile stays engine-independent. Bindings live beside it and
-    may evolve independently as engines, models and recipes are certified.
-    """
+    """A calibrated way to reproduce one stable voice on one engine."""
 
     engine_id: str
     model_id: str | None = None
@@ -52,10 +48,10 @@ class StoredVoiceProfile:
 
 
 class VoiceProfileStore:
-    """Local, versioned profile store shared by Studio clients.
+    """Local, versioned voice identity store shared by Speech Core clients.
 
-    Profiles contain no ACE account names or publishing metadata. An external
-    orchestrator stores its own account -> profile_id mapping.
+    The store deliberately contains no ACE account names, social handles or
+    publishing metadata. Orchestrators own their account -> profile_id mapping.
     """
 
     def __init__(self, directory: str | Path):
@@ -89,12 +85,14 @@ class VoiceProfileStore:
     def _profile_from_dict(cls, value: dict[str, Any]) -> VoiceProfile:
         row = dict(value or {})
         row["source"] = cls._source_from_dict(row.get("source") or {})
-        if isinstance(row.get("canonical_reference"), dict):
-            row["canonical_reference"] = cls._artifact_from_dict(row["canonical_reference"])
         if isinstance(row.get("supported_languages"), list):
             row["supported_languages"] = tuple(row["supported_languages"])
-        if isinstance(row.get("preferred_languages"), list):
-            row["preferred_languages"] = tuple(row["preferred_languages"])
+        # Engine bindings in protocol.py remain transport-level metadata. The
+        # richer calibrated bindings below are the persisted implementation view.
+        if isinstance(row.get("engine_bindings"), list):
+            from studio.protocol import EngineBinding
+
+            row["engine_bindings"] = tuple(EngineBinding(**item) for item in row["engine_bindings"])
         return VoiceProfile(**row)
 
     @classmethod
@@ -176,7 +174,7 @@ class VoiceProfileStore:
         reference: ArtifactRef | None = None,
         description: str | None = None,
         supported_languages: tuple[str, ...] = (),
-        preferred_languages: tuple[str, ...] = (),
+        default_style: str = "creator",
         consistency_locked: bool = True,
     ) -> StoredVoiceProfile:
         safe_id = self._safe_id(profile_id)
@@ -192,10 +190,9 @@ class VoiceProfileStore:
                 description=description,
             ),
             revision=1,
+            default_style=(default_style or "creator").strip().lower(),
             consistency_locked=bool(consistency_locked),
             supported_languages=tuple(supported_languages),
-            preferred_languages=tuple(preferred_languages),
-            canonical_reference=reference,
         )
         return self.save(StoredVoiceProfile(profile=profile))
 
@@ -212,10 +209,10 @@ class VoiceProfileStore:
                 display_name=profile.display_name,
                 source=profile.source,
                 revision=profile.revision + 1,
+                default_style=profile.default_style,
                 consistency_locked=profile.consistency_locked,
+                engine_bindings=profile.engine_bindings,
                 supported_languages=profile.supported_languages,
-                preferred_languages=profile.preferred_languages,
-                canonical_reference=profile.canonical_reference,
                 metadata=dict(profile.metadata),
                 schema_version=profile.schema_version,
             )
