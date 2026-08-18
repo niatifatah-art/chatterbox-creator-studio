@@ -46,14 +46,8 @@ class CoreGenerationEngine:
         self.model_manager = model_manager or LocalModelManager(data_dir / "model_state.json")
         self.profile_store = profile_store or VoiceProfileStore(self.core_dir / "voice-profiles")
         self.artifact_store = artifact_store or ArtifactStore(self.core_dir / "artifacts")
-        # The facade is allowed to read the temporary legacy mirror only to map old
-        # controller arguments back to canonical profile IDs. Identity still lives in
-        # VoiceProfileStore.
         self.voice_library = VoiceLibrary(data_dir / "voices", core_directory=self.core_dir)
 
-        # One process-owned native engine preserves current loaded-model behavior for
-        # Best-of, retries, Batch and Compare. Speech Core still owns route/reference /
-        # revision checks and the call into this native implementation.
         self._engine = NativeChatterboxEngine(self.core_dir / "generation-work")
 
         def factory(invocation_dir: Path):
@@ -90,7 +84,19 @@ class CoreGenerationEngine:
         self._engine.set_device(device, label)
 
     def set_model_path(self, model_id: str, path: str | Path | None) -> None:
+        """Bridge the legacy explicit snapshot selection into Core state.
+
+        Old UI/helper code resolved a local snapshot then configured the engine object
+        directly. Speech Core correctly validates the model manager before execution,
+        so both layers must agree on the same selected revision during migration.
+        """
         self._engine.set_model_path(model_id, path)
+        if path is not None:
+            snapshot = Path(path).expanduser().resolve()
+            selector = getattr(self.model_manager, "select_snapshot", None)
+            if not callable(selector):
+                raise RuntimeError("The model manager cannot record an explicit snapshot selection.")
+            selector(model_id, snapshot, revision=snapshot.name)
 
     def load_model(self, model_id: str, progress_callback=None) -> None:
         self._engine.load_model(model_id, progress_callback=progress_callback)
@@ -148,8 +154,6 @@ class CoreGenerationEngine:
                     continue
             except OSError:
                 continue
-            # Temporary internal bridge: VoiceLibrary owns alias/rename knowledge while
-            # the legacy mirror exists. The record it returns is the canonical identity.
             record = self.voice_library._record_for_name(name)
             if record is not None:
                 return record.profile.profile_id
