@@ -1,35 +1,33 @@
 # Voice Studio architecture
 
-Status: **current architecture and migration map**. This document replaces the original Chatterbox-only architecture description.
+Status: **current architecture and migration map**.
 
-Voice Studio is a local-first speech product. Its most important architectural rule is:
+Voice Studio is a local-first speech product. Its two most important architectural rules are:
 
 > **The user works with voices and speech tasks. Engines, checkpoints and runtimes are replaceable implementation details.**
 
-The second rule is equally important:
-
-> **Voice Studio is one client of Speech Core, not the owner of Speech Core. Any local project may consume the same small versioned protocol without importing the Studio UI.**
+> **Voice Studio is one client of Speech Core. Any local project may consume the same small versioned protocol without importing the Studio UI.**
 
 See also:
 
 - `docs/product/voice-studio-product-spec.md` — product behavior and scope.
 - `docs/adr/0001-speech-platform-boundaries.md` — accepted platform boundary.
-- `docs/PROTOCOL.md` — public compatibility and RPC contract.
-- `docs/ENGINE_SDK.md` — how engines are added/replaced.
+- `docs/PROTOCOL.md` — public compatibility/RPC contract.
+- `docs/ENGINE_SDK.md` — engine replacement/integration rules.
 - `docs/ROADMAP.md` — staged completion plan and merge gates.
 
 ## Product invariants
 
-1. **Local first.** Scripts, voices, projects, generated speech and metadata stay on the user's machine unless the user explicitly chooses a future remote capability.
-2. **Voice is the primary identity.** A saved voice is represented by a stable `voice_profile_id`, not by a provider/model/path tuple.
-3. **Capabilities are public; engines are private implementation choices.** `speech.synthesize.v1` remains stable while its engine may change.
-4. **No silent large downloads or model upgrades.** Installed model revisions remain pinned until an explicit update.
-5. **Capability-driven UI.** Unsupported controls do not pretend to work.
-6. **Reproducibility.** Outputs retain engine/model/recipe revision and other relevant provenance.
-7. **No absolute user paths in durable public artifacts.** `ArtifactRef` resolves paths inside the local implementation.
-8. **No account/platform concepts in Speech Core.** A larger orchestrator owns its own account mapping.
-9. **Raw output remains distinguishable from Studio transformations.** Finishing/preprocessing must not be mistaken for model behavior.
-10. **Migration before deletion.** Legacy data/code is removed only after the replacement path has parity tests and a migration path.
+1. **Local first.** Creator speech data stays local unless a future remote capability is explicitly selected.
+2. **Voice is the durable identity.** A saved voice is addressed by stable `voice_profile_id`, never a provider/model/path tuple.
+3. **Capabilities are public; engines are implementation.** `speech.synthesize.v1` remains the task even when the engine changes.
+4. **No silent large downloads or upgrades.** Missing models are reported; explicit installation/update owns network acquisition.
+5. **Established voices do not silently drift.** A pinned engine/model revision must remain available or generation fails visibly.
+6. **Capability-driven UI.** Unsupported controls must not pretend to work.
+7. **Reproducible artifacts.** Results retain engine/model/voice revision and safe provenance.
+8. **No Core-private absolute paths in public artifacts.** `ArtifactRef` owns logical identity; the local resolver owns the path.
+9. **No account/platform concepts in Speech Core.** Larger products own their own mapping to `voice_profile_id`.
+10. **Migration before deletion.** Legacy stores/code disappear only after replacement parity is proven.
 
 ## Durable architecture
 
@@ -44,243 +42,235 @@ See also:
                     ┌───────────▼───────────┐
                     │      Speech Core      │
                     │ contracts / routing   │
-                    │ voices / jobs / QA    │
-                    │ artifacts / engines   │
+                    │ voices / artifacts    │
+                    │ jobs / QA / engines   │
                     └──────┬─────────┬──────┘
                            │         │
                  ┌─────────▼─┐   ┌──▼──────────┐
                  │ TTS routes │   │ STT / tools │
                  └─────────┬─┘   └──┬──────────┘
                            │         │
-             Chatterbox / Qwen /   Whisper / ...
-             Kokoro / future ...
+             Chatterbox / future   Whisper / ...
+             Kokoro / Qwen ...
 
 Any other local project ── public Speech Client ──┘
 ```
 
-The external boundary is deliberately model-free. A caller should never need to import Gradio, PyTorch, Chatterbox, Qwen or a Studio screen.
+The external boundary is deliberately ML-runtime-free. A caller should never need to import Gradio, PyTorch, Chatterbox, Qwen or a Studio screen.
 
 ## Layer responsibilities
 
 ### Voice Studio
 
-Owns the creator experience:
+Owns creator experience:
 
-- Create / Voices / Projects / Transcribe / Engines / Settings screens;
+- Create / Voices / Projects / Transcribe / Engines / Settings;
 - voice-first controls and semantic styles;
-- project editing and take selection;
+- project editing/take selection;
 - explicit install/update actions;
-- human-friendly errors and progress.
+- human-friendly progress/errors.
 
-It must not contain new engine-specific provider branches. The current Gradio shell is a migration client until a future desktop shell reaches parity.
+It must not gain new provider/model branches. The current Gradio shell is a migration client until the final desktop shell reaches parity.
 
 ### Speech protocol
 
-`studio/protocol.py` is the small dependency-light public vocabulary:
+`studio/protocol.py` is the dependency-light public vocabulary:
 
-- version constants and compatibility information;
+- version/compatibility constants;
 - capability IDs;
-- voice source kinds;
+- VoiceSource kinds;
 - synthesis/transcription requests;
-- artifact/timing/quality/provenance structures;
+- artifact/timing/quality/provenance contracts;
 - job states;
-- stable semantic error kinds.
+- stable semantic errors.
 
-The protocol imports no ML runtime and no product UI.
+It imports no ML runtime and no product UI.
 
 ### Speech Core
 
 Owns reusable speech behavior:
 
-- capability discovery;
-- voice profiles and calibrated bindings;
+- capability/engine discovery;
+- canonical Voice Profiles and bindings;
 - routing policy;
-- artifact lifecycle;
-- job/progress semantics;
-- reference/speech/voice quality gates;
-- engine/runtime/model management.
+- logical artifact lifecycle;
+- synthesis/transcription/QA services as each becomes certified;
+- runtime/model management boundaries.
 
-The current JSON-RPC stdio server exposes discovery, routing and voice-profile access. Synthesis/transcription move behind this boundary in later completion phases only after parity tests.
+**Current Phase 2 state:** Speech Core now executes the supported Chatterbox V3/Turbo/Nano synthesis family through `SpeechSynthesisService`. It resolves a Voice Profile, logical clone reference, route and exact selected model snapshot; returns `SpeechArtifact`; and exposes this over the stdio RPC/client. It never downloads a missing model during synthesis.
+
+The current product UI still uses the direct legacy controller path until Phase 3 parity/cutover. This temporary duplication is intentional and must not become permanent.
 
 ### Engine adapters
 
-An adapter translates public requests into one engine's native behavior. Model-specific syntax and knobs remain here.
+An adapter translates semantic speech data into one engine's native behavior. Engine-native syntax/knobs stay here.
 
 Examples:
 
-- semantic pause/event -> engine-native syntax or deterministic external silence;
-- Ready Voice -> provider/engine voice identifier;
-- Clone Reference -> conditioning asset;
-- semantic `Creator` style -> engine-specific recipe;
-- model-specific sampling controls -> Advanced only.
+- semantic event -> native tag or deterministic external behavior;
+- Ready Voice -> native voice ID;
+- Clone Reference -> conditioning artifact;
+- semantic style -> tested engine recipe;
+- sampling/tuning -> Advanced/internal execution settings.
+
+During Phase 2 only the Chatterbox family has a Core execution adapter. Catalogued Qwen/Kokoro routes are rejected before the Chatterbox factory, preventing an implementation-family mix-up.
 
 ## Engine, runtime and model are different objects
 
-Do not collapse these concepts:
+Do not collapse:
 
 ```text
 Engine route        chatterbox-v3
 Runtime             chatterbox
 Model asset          multilingual-v3 @ immutable resolved revision
-Voice binding        voice profile + calibrated recipe for that route
+Voice binding        VoiceProfile + calibrated route/model/recipe
 ```
 
-`EngineManifest.runtime_id` groups routes that may share one isolated dependency environment. `model_ids` lists current model assets without making those model IDs part of the public capability contract.
-
-This separation allows a checkpoint replacement without changing callers, a runtime upgrade without changing a voice identity, and an engine addition without adding UI conditionals.
+This separation lets a model be replaced without changing the public capability, a runtime be upgraded without changing voice identity, and a new engine be added without product-UI branches.
 
 ## Engine status and Auto
 
-Two statuses exist at the foundation:
+Foundation statuses:
 
-- `supported` — currently allowed as an automatic route.
-- `catalogued` — discoverable, but not eligible to displace a supported route until certification.
+- `supported` — may currently be Auto-routed.
+- `catalogued` — discoverable candidate, not allowed to displace a supported route before certification.
 
-A future certification record supplies measured language/capability/quality/resource evidence. Until that exists, the router must not contain marketing-driven `if engine_id == ...` quality claims. Current routing uses compatibility, install state, consistency pinning and broad resource preference only.
+Routing currently uses compatibility, install state, explicit override, consistency pin and broad resource preference. Future `Best` ranking must consume certification measurements rather than marketing claims.
 
-## Stable voice identity
+## Canonical Voice Profile
 
-A Voice Profile is the long-lived object:
+`VoiceProfile` is now the single durable identity source:
 
 ```text
-Voice Profile
+VoiceProfile
 ├── profile ID + revision
 ├── source: ready / clone / designed / saved
-├── canonical reference or ready-voice identity
-├── languages
-├── pronunciation hints
-└── calibrated engine bindings / Golden Recipes
+├── canonical reference / native voice identity
+├── supported languages
+├── pronunciation + preferred styles
+├── engine bindings
+└── preferred engine consistency pin
 ```
 
-The repository is currently in transition: `studio/voices.py` still serves the working Gradio controller while `studio/voice_profile_store.py` is the new durable identity store. They must be consolidated in the data phase; no third voice store may be introduced.
+`studio/voice_profile_store.py` persists this versioned shape. The old `studio/voices.py` library is only a compatibility facade/mirror for the current direct Gradio controller. It is removed after Phase 3 UI cutover, not before.
 
-The current duplicated minimal/richer engine-binding shapes are also a migration item and must be reduced to one canonical persisted shape before new engines depend on them.
+Promoting an engine binding may increment the voice revision and pin `preferred_engine_id`. If a binding pins an exact model revision and the selected local model has drifted, Core fails closed instead of silently changing the established voice.
 
 ## Artifacts
 
-Speech contracts return logical artifacts rather than leaking filesystem paths:
+Portable contracts return logical artifacts:
 
 ```text
 ArtifactRef
 ├── artifact_id
-├── local://... URI
+├── local://artifacts/... URI
 ├── MIME type
 ├── size
 └── SHA-256
 ```
 
-`ArtifactStore` maps the logical reference to a real file. A future remote resolver can map the same contract to object storage without changing the speech request/result vocabulary.
+`ArtifactStore` maps the logical object to a local file. Resolution rejects traversal, ambiguous IDs, non-canonical aliases, mismatched ID/URI identity and hash tampering.
 
-## Projects and takes
-
-The existing `ProjectStore` remains JSON-backed during the migration and already reserves a `segments` field. The intended shape is logical segments with multiple takes:
-
-```text
-Project
-└── Segment
-    ├── text / voice / style / language / events
-    ├── Take 1
-    ├── Take 2
-    └── selected take
-```
-
-A logical segment does not force one inference call; an adapter may preserve broader context while the product still supports paragraph/sentence regeneration.
-
-## State storage decision for the current phase
-
-Do **not** introduce SQLite merely because the product may need it later. Existing stores use small local files and atomic temp-file replacement, and moving all creator data at the same time as the Speech Core migration would increase failure surface without improving current synthesis parity.
-
-Instead:
-
-1. every persisted schema gets an explicit version;
-2. migrations create a backup before rewriting user data;
-3. storage access remains behind store classes;
-4. durable job/history growth is measured;
-5. SQLite is reconsidered when concurrent durable jobs/history actually justify it.
-
-If adopted later, the database holds metadata/index/job state while creator audio remains ordinary files and portable export remains JSON + media.
+Generated Core speech is copied into artifact storage before temporary generation work is removed. External callers explicitly materialize an artifact to a path they own; public results do not expose the Core's private path.
 
 ## Local storage layout
 
-Source/development runs keep the repository-local storage root; frozen builds use OS user data through `studio.paths.resolve_storage_root`.
-
-Reusable Speech Core state has one canonical subdirectory:
+Development runs keep the repository-local storage root; frozen builds use OS user data via `studio.paths.resolve_storage_root`.
 
 ```text
 <storage root>/
 ├── data/
-│   ├── voices/              # legacy working voice library during migration
+│   ├── voices/              # temporary legacy mirror for current UI
 │   ├── projects/
 │   ├── settings.json
 │   ├── model_state.json
 │   └── speech-core/
 │       ├── voice-profiles/
-│       └── future core-owned state
+│       ├── artifacts/
+│       └── generation-work/ # temporary; successful work is cleaned
 └── outputs/
 ```
 
-External local clients should either receive the Speech Core process from the application or pass `--data-dir` explicitly. They should not guess filesystem paths.
+External projects should use Speech Client/RPC and logical artifacts, not guess these paths.
 
-## Local transport and compatibility
+## Storage decision
 
-The current reusable boundary uses JSON-RPC 2.0-style messages over stdin/stdout. JSON-RPC is transport-agnostic, so the request/response contract is not tied to a localhost HTTP server.
+Do not introduce SQLite merely because later phases may need it. Current stores are small local versioned files with atomic replacement and migration backups. SQLite is reconsidered when durable concurrent jobs/history create an actual need.
 
-Every client should begin with `protocol.info` (or `ensure_compatible()` in `SpeechRpcClient`) and verify overlapping RPC/schema version ranges before using higher-level calls.
+Portable export remains JSON + media regardless of internal metadata storage.
 
-Stable semantic error kinds live in the speech protocol. Clients branch on those kinds, not human message text.
+## Local transport
+
+Current reusable transport is JSON-RPC-style JSON lines over stdin/stdout. There is no default network listener.
+
+Clients begin with `protocol.info` / `ensure_compatible()` and verify overlapping protocol/schema versions before higher-level calls. Clients branch on semantic error kinds, not English text.
+
+Current public synthesis flow:
+
+```text
+external/Studio client
+  -> SpeechSynthesisRequest
+  -> Speech Core
+  -> VoiceProfile
+  -> route
+  -> exact installed model snapshot
+  -> Chatterbox engine
+  -> logical SpeechArtifact
+  -> optional explicit materialize(destination)
+```
 
 ## Model downloads and cache
 
-The current `LocalModelManager` uses Hugging Face's shared cache and records the exact selected snapshot so a moving upstream `main` ref does not silently change generation. This behavior is preserved.
+`LocalModelManager` reuses Hugging Face's shared cache and records the selected immutable snapshot revision. A moving upstream ref therefore does not automatically replace the selected model.
 
-The manager is still Chatterbox-specific in this migration phase, including download specs and conservative removal rules. It becomes a generic Engine/Model Manager only after the Speech Core synthesis path is stable. New engines must not be bolted into the existing ResembleAI-specific delete logic.
+It is still Chatterbox-specific, especially its download specs/removal rules. Phase 4 generalizes Engine/Runtime/Model management before Kokoro/Qwen are allowed to rely on it. New engine families must not be bolted into ResembleAI-specific deletion logic.
 
-## Runtime isolation
+## Runtime isolation target
 
-Different engine families may require incompatible Python/Torch/Transformers stacks. The target is one lightweight product/core environment plus isolated engine runtimes where necessary.
-
-Runtime creation/locking is an Engine Manager concern. A future runtime implementation may use `uv`, but the public speech contracts must not depend on that implementation choice.
-
-## Testing strategy
-
-Tests remain layered:
-
-1. **model-free core/contract tests** on Linux and Windows;
-2. **protocol subprocess tests** proving an external client can start and query Speech Core;
-3. **UI browser tests** for creator behavior;
-4. **platform smoke tests** for the desktop shell;
-5. **real-engine smokes** only when engine/runtime/model behavior changes;
-6. **migration/privacy tests** before legacy stores or schemas are changed;
-7. **fresh install/offline/failure/rollback tests** as Engine Manager matures.
-
-A phase is not merged simply because imports pass.
-
-## Current transitional code
-
-The working product still uses:
+Different engine families may require incompatible dependency stacks. Target:
 
 ```text
-product_app.py
-→ app.py controller
-→ VoiceLibrary / ProjectStore / LocalModelManager
-→ ChatterboxEngine
-→ V3 / Turbo / Nano
+light product/core runtime
+├── chatterbox runtime
+├── kokoro runtime
+├── qwen3-tts runtime
+└── faster-whisper runtime
 ```
 
-This path stays usable while the replacement is built beside it. The migration sequence is:
+Runtime tooling may use `uv` or another reproducible manager, but this is an Engine Manager implementation choice, never a public API requirement.
+
+## Testing gates
+
+Tests are layered:
+
+1. model-free Core/contract tests on Linux + Windows;
+2. RPC subprocess/external-client tests;
+3. browser UI E2E;
+4. Windows product smoke;
+5. optional-helper smoke;
+6. real V3/Turbo/Nano model smokes when synthesis/runtime/model paths change;
+7. migration/privacy/integrity tests;
+8. later clean-install/offline/update/rollback tests.
+
+The real model smoke now executes V3/Turbo/Nano through Speech Core and checks model revision/provenance, valid audio, exact digital pause, safe artifact metadata and progress. Nano also runs a direct-path migration parity guard for stable generation semantics.
+
+## Current migration sequence
 
 ```text
-contracts/discovery
-→ canonical voice data
-→ synthesis through Speech Core
-→ parity comparison
-→ UI adopts Speech Core
-→ remove duplicate legacy path
-→ add new engines
+contracts/discovery                     ✅
+canonical Voice Profile data            ✅
+Core Chatterbox synthesis               Phase 2 / green gate pending merge
+UI adopts Speech Core                   Phase 3
+remove duplicate direct synthesis       Phase 3
+Generic Engine/Runtime/Model Manager     Phase 4
+Kokoro                                  Phase 5
+Qwen3-TTS                               Phase 6
+STT / QA / certification / projects     later phases
+final Voice-first desktop UI/release    later phases
 ```
 
-Do not reverse this order by adding Qwen/Kokoro branches directly to `app.py`.
+Do not reverse this order by adding Qwen/Kokoro branches directly to `app.py` or `product_app.py`.
 
 ## Non-goals
 
-Voice Studio does not own image generation, video editing, publishing accounts, research/source acquisition, music/SFX generation or a full DAW timeline. Other products may consume the same generic artifact/job conventions later, but shared infrastructure is extracted only when at least two real products need it.
+Voice Studio does not own image generation, video editing, publishing accounts, research/source acquisition, music/SFX generation or a full DAW timeline. Other products may reuse generic contracts later, but shared infrastructure is extracted only when real projects need it.
