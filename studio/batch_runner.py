@@ -9,8 +9,7 @@ from typing import Any, Callable
 
 from .audio import AudioProcessOptions, process_audio
 from .batch import BatchItem
-from .engine import ChatterboxEngine
-from .reliability import GenerationPolicy, generate_reliably
+from .reliability import GenerationEngine, GenerationPolicy, generate_reliably
 
 
 BatchProgressCallback = Callable[[str, int | None, int | None], None]
@@ -25,7 +24,7 @@ class BatchGenerationSummary:
 
 
 def run_batch(
-    engine: ChatterboxEngine,
+    engine: GenerationEngine,
     items: list[BatchItem],
     output_root: str | Path,
     generation_kwargs: dict[str, Any],
@@ -60,7 +59,6 @@ def run_batch(
             kwargs = dict(generation_kwargs)
             if progress_callback:
                 def engine_progress(desc: str, current: int | None, total: int | None, *, _index=index) -> None:
-                    # Keep the batch item count stable and add chunk detail in the label.
                     suffix = ""
                     if current is not None and total:
                         suffix = f" · chunk {current}/{total}"
