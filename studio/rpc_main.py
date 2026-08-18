@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from studio.paths import resolve_storage_root, speech_core_data_dir
 from studio.rpc import run_stdio_server
 
 
+LEGACY_DATA_ENV = "CREATOR_STUDIO_DATA_DIR"
+
+
 def _default_data_dir() -> Path:
+    # PR #9 exposed CREATOR_STUDIO_DATA_DIR before the product-wide storage layout was
+    # unified. Preserve it as a compatibility override instead of breaking scripts
+    # that started using the first public sidecar boundary.
+    configured = (os.getenv(LEGACY_DATA_ENV) or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
     source_root = Path(__file__).resolve().parents[1]
     return speech_core_data_dir(resolve_storage_root(source_root))
 
