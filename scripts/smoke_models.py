@@ -8,7 +8,7 @@ import torch
 import torchaudio
 
 from studio.artifact_store import ArtifactStore
-from studio.engine import ChatterboxEngine
+from studio.engine import NativeChatterboxEngine
 from studio.model_manager import LocalModelManager
 from studio.models import MODEL_SPECS
 from studio.protocol import EngineBinding, SpeechSynthesisRequest, VoiceSourceKind
@@ -55,9 +55,6 @@ def main() -> None:
     output_dir = Path(args.output_dir).resolve() / model_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Validate the same explicit model lifecycle as the product. Hugging Face returns
-    # an immutable snapshot directory; LocalModelManager records that exact revision so
-    # Speech Core never follows a later refs/main silently.
     manager = LocalModelManager(output_dir / "model_state.json")
     managed = manager.download(model_id, progress=lambda current, total, desc: None)
     if not managed.installed or not managed.snapshot_path or not managed.revision:
@@ -144,13 +141,13 @@ def main() -> None:
     if Path(state["models"][model_id]["snapshot_path"]).resolve() != Path(managed.snapshot_path).resolve():
         raise RuntimeError("Model state did not preserve the exact snapshot path used by Core")
 
-    # One model performs a direct-path parity inference as a migration guard. Exact
-    # sample equality is intentionally not required; the gate checks the stable product
-    # semantics that must survive the Core boundary without doubling every matrix job.
+    # Nano performs one explicit native-vs-Core parity inference. The public
+    # `ChatterboxEngine` name is Core-backed in Phase 3, so direct parity must name the
+    # native implementation deliberately rather than accidentally bypassing Core.
     parity: dict[str, object] | None = None
     if model_id == "nano":
         direct_dir = output_dir / "direct-parity"
-        direct = ChatterboxEngine(direct_dir)
+        direct = NativeChatterboxEngine(direct_dir)
         if direct.device != "cpu":
             raise RuntimeError(f"CI parity expected CPU, got {direct.device_label}")
         direct.set_model_path(model_id, managed.snapshot_path)
