@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from studio.artifact_store import ArtifactStore
+from studio.cancellation import clear_generation_cancel, request_generation_cancel
 from studio.model_manager import LocalModelStatus
 from studio.protocol import (
     EngineBinding,
@@ -72,7 +73,7 @@ class FakeResult:
     audio_path: Path
     metadata_path: Path
     seed: int
-    chunks: list[str]
+    chunk_count: int
     model_id: str
 
 
@@ -94,14 +95,25 @@ class FakeEngine:
 
     def generate(self, **kwargs):
         self.calls.append(dict(kwargs))
+        progress = kwargs.get("progress_callback")
+        if callable(progress):
+            progress("Generating speech…", 0, 1)
         audio = self.output_dir / "generated.wav"
         _write_wav(audio, seconds=0.35)
         metadata = self.output_dir / "generated.json"
         metadata.write_text(
-            json.dumps({"text": kwargs["text"], "voice_path": str(kwargs["voice_path"])}),
+            json.dumps({"text": kwargs["script"], "voice_path": str(kwargs["voice_path"])}),
             encoding="utf-8",
         )
-        return FakeResult(audio, metadata, int(kwargs.get("seed") or 1234), [kwargs["text"]], "multilingual-v3")
+        if callable(progress):
+            progress("Generating speech…", 1, 1)
+        return FakeResult(
+            audio_path=audio,
+            metadata_path=metadata,
+            seed=int(kwargs.get("seed") or 1234),
+            chunk_count=1,
+            model_id=str(kwargs["model_id"]),
+        )
 
     def unload(self) -> None:
         self.unloaded = True
@@ -159,6 +171,7 @@ def test_core_synthesis_routes_arabic_clone_and_returns_private_logical_artifact
     assert artifact.provenance.model_id == "multilingual-v3"
     assert artifact.provenance.model_revision == "rev-multilingual-v3"
     assert artifact.metadata["seed"] == 42
+    assert artifact.metadata["chunk_count"] == 1
     assert artifact.audio.uri.startswith("local://artifacts/")
     assert str(tmp_path.resolve()) not in json.dumps(artifact.to_dict())
     assert artifacts.resolve(artifact.audio).is_file()
@@ -166,6 +179,8 @@ def test_core_synthesis_routes_arabic_clone_and_returns_private_logical_artifact
     assert manager.download_called is False
     assert engines and engines[0].calls[0]["language_id"] == "ar"
     assert engines[0].calls[0]["seed"] == 42
+    assert engines[0].calls[0]["script"] == request.text
+    assert engines[0].calls[0]["model_id"] == "multilingual-v3"
     assert engines[0].unloaded is True
     assert not any(service.work_dir.iterdir())
 
@@ -191,6 +206,7 @@ def test_core_synthesis_can_target_each_current_chatterbox_route_without_new_ser
         assert result.provenance.engine_id == engine_id
         assert result.provenance.model_id == model_id
     assert len(engines) == 3
+    assert [engine.calls[0]["model_id"] for engine in engines] == ["multilingual-v3", "turbo", "nano"]
 
 
 def test_missing_model_is_structured_and_never_downloads(tmp_path: Path):
@@ -278,17 +294,8 @@ def test_preferred_engine_pin_is_respected_for_consistency_voice(tmp_path: Path)
         tmp_path,
         installed=("multilingual-v3", "turbo", "nano"),
     )
-    record = profiles.get("creator-voice")
-    assert record is not None
-    from dataclasses import replace
-    from studio.voice_profile_store import StoredVoiceProfile
-
-    profiles.save(
-        StoredVoiceProfile(
-            profile=replace(record.profile, preferred_engine_id="chatterbox-nano", consistency_locked=True),
-            created_at=record.created_at,
-        )
-    )
+    profiles.add_binding("creator-voice", EngineBinding(engine_id="chatterbox-nano", model_id="nano"))
+    profiles.set_preferred_engine("creator-voice", "chatterbox-nano")
     result = service.synthesize(
         SpeechSynthesisRequest(
             text="Hello",
@@ -298,3 +305,34 @@ def test_preferred_engine_pin_is_respected_for_consistency_voice(tmp_path: Path)
         )
     )
     assert result.provenance.engine_id == "chatterbox-nano"
+
+
+def test_core_forwards_progress_and_maps_cooperative_cancel(tmp_path: Path):
+    service, _profiles, _artifacts, _manager, engines = _service(tmp_path)
+    progress: list[tuple[str, int | None, int | None]] = []
+    result = service.synthesize(
+        SpeechSynthesisRequest(
+            text="Hello",
+            voice_profile_id="creator-voice",
+            engine_override="chatterbox-v3",
+        ),
+        progress_callback=lambda stage, current, total: progress.append((stage, current, total)),
+    )
+    assert result.audio.size_bytes and result.audio.size_bytes > 0
+    assert any(stage == "Generating speech…" and current == 1 and total == 1 for stage, current, total in progress)
+    assert engines and engines[0].unloaded is True
+
+    clear_generation_cancel()
+    request_generation_cancel()
+    try:
+        with pytest.raises(SynthesisError) as exc:
+            service.synthesize(
+                SpeechSynthesisRequest(
+                    text="Cancelled",
+                    voice_profile_id="creator-voice",
+                    engine_override="chatterbox-v3",
+                )
+            )
+        assert exc.value.kind == SpeechErrorKind.CANCELLED
+    finally:
+        clear_generation_cancel()
