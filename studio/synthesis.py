@@ -86,6 +86,12 @@ class EngineProtocol(Protocol):
 EngineFactory = Callable[[Path], EngineProtocol]
 ProgressCallback = Callable[[str, int | None, int | None], None]
 
+# Phase 2 deliberately proves the public Core boundary with the existing Chatterbox
+# implementation only. The router may catalogue future engines, but execution must
+# never fall through into the wrong adapter. Phase 4 replaces this guard with generic
+# engine-family dispatch once isolated runtimes/adapters exist.
+PHASE2_EXECUTION_FAMILIES = frozenset({"chatterbox"})
+
 
 def _default_engine_factory(output_dir: Path) -> EngineProtocol:
     # Import lazily so protocol/discovery tests never import the ML implementation.
@@ -282,6 +288,12 @@ class SpeechSynthesisService:
 
             decision = self._select_route(request, profile, language)
             manifest = ENGINE_MANIFESTS[decision.engine_id]
+            if manifest.family not in PHASE2_EXECUTION_FAMILIES:
+                raise SynthesisError(
+                    SpeechErrorKind.ENGINE_UNAVAILABLE,
+                    f"{manifest.display_name} is catalogued but does not have a local execution adapter in this Speech Core build yet.",
+                    data={"engine_id": manifest.engine_id, "family": manifest.family},
+                )
             binding = profile.binding_for(decision.engine_id)
             model_id, status = self._status_for_manifest(manifest, binding.model_id if binding else None)
             if model_id is None:
