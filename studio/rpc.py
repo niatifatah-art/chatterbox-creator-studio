@@ -8,20 +8,33 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from studio.engine_registry import ENGINE_MANIFESTS
-from studio.protocol import Capability, Priority
-from studio.speech_router import RouteRequest, route
+from studio.protocol import (
+    Capability,
+    EngineStatus,
+    Priority,
+    ProtocolInfo,
+    SpeechErrorKind,
+)
+from studio.speech_router import RouteError, RouteRequest, route
 from studio.voice_profile_store import VoiceProfileStore
 
 
 JSONRPC_VERSION = "2.0"
-RPC_PROTOCOL_VERSION = 1
 
 
 class RpcError(Exception):
-    def __init__(self, code: int, message: str, data: Any | None = None):
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        *,
+        kind: SpeechErrorKind = SpeechErrorKind.INTERNAL,
+        data: Any | None = None,
+    ):
         super().__init__(message)
         self.code = int(code)
         self.message = str(message)
+        self.kind = kind
         self.data = data
 
 
@@ -54,28 +67,41 @@ def _require_dict(params: Any) -> dict[str, Any]:
     if params is None:
         return {}
     if not isinstance(params, dict):
-        raise RpcError(-32602, "Params must be a JSON object.")
+        raise RpcError(
+            -32602,
+            "Params must be a JSON object.",
+            kind=SpeechErrorKind.INVALID_ARGUMENT,
+        )
     return params
 
 
+def _protocol_info(_context: RpcContext, _params: dict[str, Any]) -> dict[str, Any]:
+    return ProtocolInfo().to_dict()
+
+
 def _health(_context: RpcContext, _params: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "rpc_protocol_version": RPC_PROTOCOL_VERSION,
-        "speech_schema_version": 1,
-        "transport": "stdio-jsonl",
-    }
+    return {"status": "ok", **ProtocolInfo().to_dict()}
 
 
 def _capabilities(_context: RpcContext, _params: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for capability in Capability:
-        engines = sorted(
-            manifest.engine_id
+        manifests = [
+            manifest
             for manifest in ENGINE_MANIFESTS.values()
             if capability in manifest.capabilities
+        ]
+        rows.append(
+            {
+                "id": capability.value,
+                "engines": sorted(manifest.engine_id for manifest in manifests),
+                "supported_engines": sorted(
+                    manifest.engine_id
+                    for manifest in manifests
+                    if manifest.status == EngineStatus.SUPPORTED
+                ),
+            }
         )
-        rows.append({"id": capability.value, "engines": engines})
     return rows
 
 
@@ -83,17 +109,19 @@ def _engines(_context: RpcContext, params: dict[str, Any]) -> list[dict[str, Any
     include_catalogued = bool(params.get("include_catalogued", True))
     rows: list[dict[str, Any]] = []
     for manifest in sorted(ENGINE_MANIFESTS.values(), key=lambda item: item.engine_id):
-        if not include_catalogued and manifest.status != "supported":
+        if not include_catalogued and manifest.status != EngineStatus.SUPPORTED:
             continue
         rows.append(
             {
                 "engine_id": manifest.engine_id,
                 "display_name": manifest.display_name,
                 "family": manifest.family,
+                "runtime_id": manifest.runtime_id,
+                "model_ids": list(manifest.model_ids),
                 "capabilities": sorted(item.value for item in manifest.capabilities),
                 "languages": list(manifest.languages),
                 "resource_tier": manifest.resource_tier,
-                "status": manifest.status,
+                "status": manifest.status.value,
                 "code_license": manifest.code_license,
                 "weights_license": manifest.weights_license,
                 "notes": manifest.notes,
@@ -106,18 +134,34 @@ def _route(_context: RpcContext, params: dict[str, Any]) -> dict[str, Any]:
     try:
         capability = Capability(str(params["capability"]))
     except KeyError as exc:
-        raise RpcError(-32602, "Missing required param: capability") from exc
+        raise RpcError(
+            -32602,
+            "Missing required param: capability",
+            kind=SpeechErrorKind.INVALID_ARGUMENT,
+        ) from exc
     except ValueError as exc:
-        raise RpcError(-32602, "Unknown speech capability.") from exc
+        raise RpcError(
+            -32602,
+            "Unknown speech capability.",
+            kind=SpeechErrorKind.INVALID_ARGUMENT,
+        ) from exc
 
     try:
         priority = Priority(str(params.get("priority", Priority.AUTO.value)))
     except ValueError as exc:
-        raise RpcError(-32602, "Unknown routing priority.") from exc
+        raise RpcError(
+            -32602,
+            "Unknown routing priority.",
+            kind=SpeechErrorKind.INVALID_ARGUMENT,
+        ) from exc
 
     installed = params.get("installed_engines") or []
     if not isinstance(installed, list) or not all(isinstance(item, str) for item in installed):
-        raise RpcError(-32602, "installed_engines must be a list of engine IDs.")
+        raise RpcError(
+            -32602,
+            "installed_engines must be a list of engine IDs.",
+            kind=SpeechErrorKind.INVALID_ARGUMENT,
+        )
 
     request = RouteRequest(
         capability=capability,
@@ -133,8 +177,9 @@ def _route(_context: RpcContext, params: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         decision = route(request)
-    except ValueError as exc:
-        raise RpcError(-32010, str(exc)) from exc
+    except RouteError as exc:
+        numeric_code = -32010 if exc.kind == SpeechErrorKind.NO_COMPATIBLE_ENGINE else -32602
+        raise RpcError(numeric_code, str(exc), kind=exc.kind) from exc
     return _clean(decision)
 
 
@@ -162,10 +207,18 @@ def _voices_list(context: RpcContext, _params: dict[str, Any]) -> list[dict[str,
 def _voices_get(context: RpcContext, params: dict[str, Any]) -> dict[str, Any]:
     profile_id = str(params.get("profile_id") or "").strip()
     if not profile_id:
-        raise RpcError(-32602, "Missing required param: profile_id")
+        raise RpcError(
+            -32602,
+            "Missing required param: profile_id",
+            kind=SpeechErrorKind.INVALID_ARGUMENT,
+        )
     record = context.voice_profiles.get(profile_id)
     if record is None:
-        raise RpcError(-32004, f"Voice profile '{profile_id}' was not found.")
+        raise RpcError(
+            -32004,
+            f"Voice profile '{profile_id}' was not found.",
+            kind=SpeechErrorKind.NOT_FOUND,
+        )
     return _clean(record)
 
 
@@ -174,6 +227,7 @@ Handler = Callable[[RpcContext, dict[str, Any]], Any]
 
 METHODS: dict[str, Handler] = {
     "health": _health,
+    "protocol.info": _protocol_info,
     "capabilities.list": _capabilities,
     "engines.list": _engines,
     "route.decide": _route,
@@ -192,30 +246,50 @@ class SpeechRpcServer:
         if error is None:
             payload["result"] = _clean(result)
         else:
-            error_payload: dict[str, Any] = {"code": error.code, "message": error.message}
-            if error.data is not None:
-                error_payload["data"] = _clean(error.data)
-            payload["error"] = error_payload
+            error_data: dict[str, Any] = {"kind": error.kind.value}
+            if isinstance(error.data, dict):
+                error_data.update(_clean(error.data))
+            elif error.data is not None:
+                error_data["details"] = _clean(error.data)
+            payload["error"] = {
+                "code": error.code,
+                "message": error.message,
+                "data": error_data,
+            }
         return payload
 
     def handle(self, request: Any) -> dict[str, Any] | None:
         if not isinstance(request, dict):
-            return self._response(None, error=RpcError(-32600, "Invalid Request"))
+            return self._response(
+                None,
+                error=RpcError(-32600, "Invalid Request", kind=SpeechErrorKind.INVALID_ARGUMENT),
+            )
         request_id = request.get("id")
         is_notification = "id" not in request
         if request.get("jsonrpc") != JSONRPC_VERSION or not isinstance(request.get("method"), str):
-            return None if is_notification else self._response(request_id, error=RpcError(-32600, "Invalid Request"))
+            return None if is_notification else self._response(
+                request_id,
+                error=RpcError(-32600, "Invalid Request", kind=SpeechErrorKind.INVALID_ARGUMENT),
+            )
         method = request["method"]
         handler = METHODS.get(method)
         if handler is None:
-            return None if is_notification else self._response(request_id, error=RpcError(-32601, "Method not found"))
+            return None if is_notification else self._response(
+                request_id,
+                error=RpcError(-32601, "Method not found", kind=SpeechErrorKind.INVALID_ARGUMENT),
+            )
         try:
             params = _require_dict(request.get("params"))
             result = handler(self.context, params)
         except RpcError as exc:
             return None if is_notification else self._response(request_id, error=exc)
         except Exception as exc:  # boundary: never expose a Python traceback to clients
-            error = RpcError(-32603, "Internal error", {"error_class": type(exc).__name__})
+            error = RpcError(
+                -32603,
+                "Internal error",
+                kind=SpeechErrorKind.INTERNAL,
+                data={"error_class": type(exc).__name__},
+            )
             return None if is_notification else self._response(request_id, error=error)
         return None if is_notification else self._response(request_id, result=result)
 
@@ -227,7 +301,10 @@ class SpeechRpcServer:
             try:
                 request = json.loads(line)
             except json.JSONDecodeError:
-                response = self._response(None, error=RpcError(-32700, "Parse error"))
+                response = self._response(
+                    None,
+                    error=RpcError(-32700, "Parse error", kind=SpeechErrorKind.INVALID_ARGUMENT),
+                )
             else:
                 response = self.handle(request)
             if response is not None:
