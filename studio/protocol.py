@@ -5,7 +5,14 @@ from enum import Enum
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+# Public compatibility numbers live here so the RPC server, clients and tests do not
+# each invent their own version constants. Bump the schema only for a contract change
+# that cannot be represented compatibly inside the current shape.
+SPEECH_SCHEMA_VERSION = 1
+MIN_SPEECH_SCHEMA_VERSION = 1
+RPC_PROTOCOL_VERSION = 1
+MIN_RPC_PROTOCOL_VERSION = 1
+SCHEMA_VERSION = SPEECH_SCHEMA_VERSION  # backwards-compatible alias
 
 
 class Capability(str, Enum):
@@ -50,6 +57,32 @@ class JobState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class EngineStatus(str, Enum):
+    """Whether an engine may be selected automatically.
+
+    `catalogued` means the Studio knows what the engine could provide but it has not
+    passed the local install/license/quality certification required for Auto routing.
+    """
+
+    SUPPORTED = "supported"
+    CATALOGUED = "catalogued"
+
+
+class SpeechErrorKind(str, Enum):
+    """Stable machine-readable errors exposed to external clients.
+
+    JSON-RPC numeric codes remain transport-level. Clients should branch on these
+    semantic kinds rather than parsing human error messages.
+    """
+
+    INVALID_ARGUMENT = "invalid_argument"
+    NOT_FOUND = "not_found"
+    NO_COMPATIBLE_ENGINE = "no_compatible_engine"
+    PROTOCOL_INCOMPATIBLE = "protocol_incompatible"
+    ENGINE_UNAVAILABLE = "engine_unavailable"
+    INTERNAL = "internal"
+
+
 def _clean(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
@@ -60,6 +93,19 @@ def _clean(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _clean(item) for key, item in value.items()}
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class ProtocolInfo:
+    rpc_protocol_version: int = RPC_PROTOCOL_VERSION
+    min_rpc_protocol_version: int = MIN_RPC_PROTOCOL_VERSION
+    speech_schema_version: int = SPEECH_SCHEMA_VERSION
+    min_speech_schema_version: int = MIN_SPEECH_SCHEMA_VERSION
+    transport: str = "stdio-jsonl"
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +221,9 @@ class TranscriptionRequest:
     word_timestamps: bool = True
     schema_version: int = SCHEMA_VERSION
 
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
+
 
 @dataclass(frozen=True, slots=True)
 class TranscriptArtifact:
@@ -200,9 +249,18 @@ class JobProgress:
     can_cancel: bool = True
     schema_version: int = SCHEMA_VERSION
 
+    def to_dict(self) -> dict[str, Any]:
+        return _clean(asdict(self))
+
 
 @dataclass(frozen=True, slots=True)
 class EngineBinding:
+    """Legacy/minimal public binding shape.
+
+    The richer persisted voice binding is being consolidated in the next data phase.
+    Keep this contract stable until that migration is complete.
+    """
+
     engine_id: str
     model_id: str | None = None
     recipe_id: str | None = None

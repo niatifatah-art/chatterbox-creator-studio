@@ -35,7 +35,31 @@ The user-facing names are intentionally simple:
 | **Expressive** | Chatterbox Turbo | English | expressive English and paralinguistic tags |
 | **Light** | Chatterbox Nano | English | CPU-friendly local generation |
 
-The product language and model-management architecture are kept separate so the interface does not have to be tied to one model family forever. The current implementation intentionally focuses only on these three models.
+The product language and model-management architecture are kept separate so the interface does not have to be tied to one model family forever. The current working implementation intentionally focuses only on these three models; cataloguing another engine does not make it an automatic or shipped route.
+
+## Architecture and future integrations
+
+The durable direction is deliberately different from a model-specific UI:
+
+```text
+Voice Studio ─┐
+              ├── Speech Core ── capability router ── engine adapters
+Other client ─┘
+```
+
+Voice Studio is a client of the reusable Speech Core. A future local project can use the same public client/protocol without importing Gradio or any model implementation. Public callers ask for versioned capabilities such as `speech.synthesize.v1`; engine, runtime and checkpoint choices remain replaceable implementation details unless an advanced caller explicitly overrides them.
+
+The working Gradio/Chatterbox generation path remains in place while this boundary is migrated and tested. New engines are not added directly to `app.py` during that migration.
+
+Architecture and implementation contracts:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current architecture and migration map.
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — local public compatibility/RPC contract.
+- [`docs/ENGINE_SDK.md`](docs/ENGINE_SDK.md) — engine/runtime/model addition and replacement rules.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — ordered completion phases and merge gates.
+- [`docs/product/voice-studio-product-spec.md`](docs/product/voice-studio-product-spec.md) — product behavior and UX contract.
+
+A model-free external-client smoke lives in [`examples/speech_client_minimal.py`](examples/speech_client_minimal.py). Actual synthesis moves behind Speech Core only after the existing Chatterbox path reaches parity through that boundary.
 
 ## Install for development / current local testing
 
@@ -66,7 +90,7 @@ bash scripts/setup_linux.sh
 bash scripts/start_linux.sh
 ```
 
-The start scripts launch `product_app.py`, the current product shell. `app.py` still contains the proven v1.1 controller and legacy component tree while the UI is being separated from the stable generation/storage core.
+The start scripts launch `product_app.py`, the current product shell. `app.py` still contains the proven v1.1 controller and legacy component tree while the UI and reusable Speech Core are separated from the stable generation/storage path.
 
 ## Windows desktop packaging preview
 
@@ -119,8 +143,9 @@ data/
 ├── model_state.json   # exact model snapshots selected by the app
 ├── settings.json
 ├── recipes.json       # reusable saved-sound recipes
-├── voices/
-└── projects/
+├── voices/            # working legacy reference library during migration
+├── projects/
+└── speech-core/       # reusable Core-owned state as the migration progresses
 
 outputs/
 └── ...
@@ -152,6 +177,8 @@ The static product site lives in [`website/`](website/). It is intentionally lig
 
 The normal app binds to `127.0.0.1` and Gradio analytics are disabled. Saved voices, projects, recipes, settings, generated WAVs, and metadata remain local. Network access is used for explicit model/dependency installs and update checks. **Offline mode** blocks model downloads and checks.
 
+Speech Core's public artifacts use logical local references rather than absolute user paths. Optional product telemetry is off by default and its allowlist rejects scripts, transcripts, voice paths and account identity fields.
+
 Only clone voices you have the right and consent to use.
 
 ## Open-source credits and independence
@@ -173,9 +200,10 @@ CI also runs:
 
 - Ubuntu and Windows core tests.
 - Model-specific profile, language-routing, writable-path, and saved-recipe tests.
+- A model-free subprocess test proving an external client can negotiate and query Speech Core.
 - A Windows product UI import/start/HTTP smoke.
 - Chromium end-to-end checks for adaptive language controls, explicit download confirmation, caret pause insertion, Compare selection, the model library, and Transcribe setup.
-- Real CPU generation smokes for Multilingual, Expressive, and Light.
+- Real CPU generation smokes for Multilingual, Expressive, and Light when engine behavior changes.
 - An optional Faster-Whisper / preprocessing / audio smoke.
 - A static website smoke.
 - A Windows desktop-package build and packaged executable self-test before producing an installer artifact.

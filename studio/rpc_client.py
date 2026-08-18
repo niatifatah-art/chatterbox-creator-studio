@@ -7,19 +7,30 @@ import threading
 from pathlib import Path
 from typing import Any, Sequence
 
+from studio.protocol import (
+    MIN_RPC_PROTOCOL_VERSION,
+    MIN_SPEECH_SCHEMA_VERSION,
+    RPC_PROTOCOL_VERSION,
+    SPEECH_SCHEMA_VERSION,
+    SpeechErrorKind,
+)
+
 
 class SpeechRpcClientError(RuntimeError):
     def __init__(self, code: int, message: str, data: Any | None = None):
         super().__init__(message)
         self.code = int(code)
         self.data = data
+        self.kind: str | None = None
+        if isinstance(data, dict) and data.get("kind"):
+            self.kind = str(data["kind"])
 
 
 class SpeechRpcClient:
-    """Minimal synchronous JSON-RPC client for the local Speech Core sidecar.
+    """Small synchronous client for the local Speech Core sidecar.
 
-    The client deliberately speaks only the public protocol. It does not import
-    model adapters, Gradio, ACE, or any engine-specific implementation.
+    External projects should depend on this public client/protocol boundary rather
+    than importing Gradio, model adapters or engine-specific implementation code.
     """
 
     def __init__(self, command: Sequence[str], *, cwd: str | Path | None = None):
@@ -129,14 +140,74 @@ class SpeechRpcClient:
             raise RuntimeError("Speech Core health response is invalid.")
         return result
 
+    def protocol_info(self) -> dict[str, Any]:
+        try:
+            result = self.call("protocol.info")
+        except SpeechRpcClientError as exc:
+            # PR #9-era servers already returned protocol/schema versions from
+            # `health` but predated the dedicated discovery method. Keep that one
+            # additive transition compatible instead of forcing lockstep upgrades.
+            if exc.code != -32601:
+                raise
+            result = self.health()
+        if not isinstance(result, dict):
+            raise RuntimeError("Speech Core protocol response is invalid.")
+        return result
+
+    def ensure_compatible(self) -> dict[str, Any]:
+        """Fail early when a caller and Speech Core cannot understand each other."""
+
+        info = self.protocol_info()
+        server_rpc = int(info.get("rpc_protocol_version", 0))
+        server_min_rpc = int(info.get("min_rpc_protocol_version", server_rpc))
+        server_schema = int(info.get("speech_schema_version", 0))
+        server_min_schema = int(info.get("min_speech_schema_version", server_schema))
+
+        rpc_overlap = server_min_rpc <= RPC_PROTOCOL_VERSION and MIN_RPC_PROTOCOL_VERSION <= server_rpc
+        schema_overlap = server_min_schema <= SPEECH_SCHEMA_VERSION and MIN_SPEECH_SCHEMA_VERSION <= server_schema
+        if not rpc_overlap or not schema_overlap:
+            raise SpeechRpcClientError(
+                -32020,
+                "Speech Core protocol is incompatible with this client.",
+                {
+                    "kind": SpeechErrorKind.PROTOCOL_INCOMPATIBLE.value,
+                    "server": info,
+                    "client": {
+                        "rpc_protocol_version": RPC_PROTOCOL_VERSION,
+                        "min_rpc_protocol_version": MIN_RPC_PROTOCOL_VERSION,
+                        "speech_schema_version": SPEECH_SCHEMA_VERSION,
+                        "min_speech_schema_version": MIN_SPEECH_SCHEMA_VERSION,
+                    },
+                },
+            )
+        return info
+
+    def capabilities(self) -> list[dict[str, Any]]:
+        result = self.call("capabilities.list")
+        if not isinstance(result, list):
+            raise RuntimeError("Speech Core capability response is invalid.")
+        return result
+
     def engines(self, *, include_catalogued: bool = True) -> list[dict[str, Any]]:
         result = self.call("engines.list", {"include_catalogued": include_catalogued})
         if not isinstance(result, list):
             raise RuntimeError("Speech Core engine response is invalid.")
         return result
 
+    def route_decide(self, **params: Any) -> dict[str, Any]:
+        result = self.call("route.decide", dict(params))
+        if not isinstance(result, dict):
+            raise RuntimeError("Speech Core route response is invalid.")
+        return result
+
     def voices(self) -> list[dict[str, Any]]:
         result = self.call("voices.list")
         if not isinstance(result, list):
+            raise RuntimeError("Speech Core voice response is invalid.")
+        return result
+
+    def voice(self, profile_id: str) -> dict[str, Any]:
+        result = self.call("voices.get", {"profile_id": profile_id})
+        if not isinstance(result, dict):
             raise RuntimeError("Speech Core voice response is invalid.")
         return result

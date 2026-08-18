@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from studio.engine_registry import engines_for, manifest_for
+from studio.engine_registry import EngineManifest, engines_for, manifest_for
 from studio.protocol import (
     ArtifactRef,
     Capability,
+    EngineStatus,
     Priority,
     Provenance,
     SpeechArtifact,
@@ -58,12 +59,42 @@ def test_voice_profile_is_engine_independent_and_versioned():
     assert "engine_id" not in payload["source"]
 
 
-def test_registry_exposes_capabilities_instead_of_ui_assumptions():
+def test_registry_exposes_capabilities_runtime_and_model_assets():
     qwen = manifest_for("qwen3-tts")
     assert qwen.supports(Capability.SYNTHESIZE, Capability.VOICE_DESIGN)
-    assert qwen.status == "catalogued"
-    assert manifest_for("chatterbox-v3").supports(Capability.VOICE_CLONE)
+    assert qwen.status == EngineStatus.CATALOGUED
+    chatterbox = manifest_for("chatterbox-v3")
+    assert chatterbox.supports(Capability.VOICE_CLONE)
+    assert chatterbox.runtime_id == "chatterbox"
+    assert chatterbox.model_ids == ("multilingual-v3",)
     assert any(item.engine_id == "faster-whisper" for item in engines_for(Capability.TRANSCRIBE))
+
+
+def test_router_accepts_a_new_manifest_without_engine_name_branch(monkeypatch):
+    future = EngineManifest(
+        engine_id="future-local-tts",
+        display_name="Future Local TTS",
+        family="future",
+        capabilities=frozenset({Capability.SYNTHESIZE, Capability.VOICE_CLONE}),
+        languages=("en",),
+        resource_tier="medium",
+        code_license="MIT",
+        weights_license="MIT",
+        runtime_id="future-runtime",
+        model_ids=("future-model-v1",),
+        status=EngineStatus.SUPPORTED,
+    )
+    monkeypatch.setattr("studio.speech_router.ENGINE_MANIFESTS", {future.engine_id: future})
+    decision = route(
+        RouteRequest(
+            capability=Capability.SYNTHESIZE,
+            language="en",
+            needs_voice_clone=True,
+            installed_engines=frozenset({future.engine_id}),
+        )
+    )
+    assert decision.engine_id == future.engine_id
+    assert not decision.requires_install
 
 
 def test_arabic_clone_prefers_current_supported_multilingual_engine():
@@ -105,7 +136,7 @@ def test_best_quality_does_not_promote_uncertified_engine_over_supported_route()
         )
     )
     assert decision.engine_id == "chatterbox-v3"
-    assert manifest_for(decision.engine_id).status == "supported"
+    assert manifest_for(decision.engine_id).status == EngineStatus.SUPPORTED
 
 
 def test_voice_design_can_select_catalogued_engine_but_marks_install_needed():

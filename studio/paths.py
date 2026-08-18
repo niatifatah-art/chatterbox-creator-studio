@@ -8,6 +8,7 @@ from typing import Mapping
 
 STORAGE_ENV = "CREATOR_STUDIO_STORAGE_ROOT"
 APP_DIR_NAME = "CreatorStudio"
+SPEECH_CORE_DIR_NAME = "speech-core"
 
 
 def resolve_storage_root(
@@ -52,3 +53,14 @@ def resolve_storage_root(
     xdg = (env.get("XDG_DATA_HOME") or "").strip()
     base = Path(xdg) if xdg else user_home / ".local" / "share"
     return (base / APP_DIR_NAME).resolve()
+
+
+def speech_core_data_dir(storage_root: str | Path) -> Path:
+    """Canonical private data directory for the reusable Speech Core.
+
+    Callers may choose a different storage root, but they should not invent a second
+    layout under it. Keeping this helper shared prevents the desktop UI, CLI and an
+    external local client from silently creating separate voice-profile stores.
+    """
+
+    return Path(storage_root).expanduser().resolve() / "data" / SPEECH_CORE_DIR_NAME
