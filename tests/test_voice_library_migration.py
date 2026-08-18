@@ -6,6 +6,8 @@ import struct
 import wave
 from pathlib import Path
 
+import pytest
+
 from studio.voices import VoiceLibrary, VoiceReferenceAnalysis
 
 
@@ -111,6 +113,57 @@ def test_rename_changes_display_name_but_keeps_stable_profile_id_and_old_id_alia
     # alias even though only the new display name appears in the picker.
     assert name not in library.list()
     assert library.path_for(name) is not None
+
+
+def test_delete_through_old_alias_removes_current_mirror_without_resurrection(tmp_path: Path):
+    voices_dir = tmp_path / "data" / "voices"
+    source = tmp_path / "source.wav"
+    _write_wav(source)
+    library = VoiceLibrary(voices_dir)
+    old_name, _ = library.save(str(source), "Original")
+    new_name = library.rename(old_name, "Current Name")
+    current_path = voices_dir / f"{new_name}.wav"
+    assert current_path.exists()
+
+    # An old project may still ask to delete using the pre-rename alias. Delete must
+    # resolve the identity first and remove the *current* legacy mirror, otherwise it
+    # would be re-imported on the next startup.
+    assert library.delete(old_name)
+    assert not current_path.exists()
+    assert library._record_for_name(new_name) is None
+
+    reopened = VoiceLibrary(voices_dir)
+    assert new_name not in reopened.list()
+    assert reopened._record_for_name(old_name) is None
+
+
+def test_old_alias_is_reserved_so_new_save_cannot_hijack_existing_identity(tmp_path: Path):
+    voices_dir = tmp_path / "data" / "voices"
+    source = tmp_path / "source.wav"
+    replacement = tmp_path / "replacement.wav"
+    _write_wav(source)
+    _write_wav(replacement, seconds=0.35)
+    library = VoiceLibrary(voices_dir)
+    old_name, _ = library.save(str(source), "Original")
+    library.rename(old_name, "Current Name")
+
+    with pytest.raises(FileExistsError, match="retained as an alias"):
+        library.save(str(replacement), old_name)
+
+
+def test_legacy_mirror_uses_windows_safe_names_without_destroying_unicode(tmp_path: Path):
+    voices_dir = tmp_path / "data" / "voices"
+    source = tmp_path / "source.wav"
+    _write_wav(source)
+    library = VoiceLibrary(voices_dir)
+
+    reserved, reserved_path = library.save(str(source), "CON")
+    assert reserved.casefold() != "con"
+    assert reserved_path.is_file()
+
+    arabic = library.duplicate(reserved, "صوت عربي")
+    assert arabic.startswith("صوت")
+    assert library.path_for(arabic) is not None
 
 
 def test_duplicate_owns_an_independent_artifact_and_delete_preserves_original(tmp_path: Path):
