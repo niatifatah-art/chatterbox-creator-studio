@@ -4,9 +4,7 @@ import array
 import hashlib
 import json
 import math
-import re
 import shutil
-import unicodedata
 import wave
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -14,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from studio.artifact_store import ArtifactStore
+from studio.naming import safe_local_name
 from studio.protocol import VoiceSource, VoiceSourceKind
 from studio.voice_profile_store import StoredVoiceProfile, VoiceProfileStore
 
@@ -65,11 +64,9 @@ class VoiceLibrary:
 
     @staticmethod
     def _slug(name: str) -> str:
-        # Keep Unicode letters/digits (Arabic, CJK, etc.) while removing path
-        # separators and unsafe punctuation from local filenames.
-        normalized = unicodedata.normalize("NFKC", (name or "voice").strip())
-        clean = re.sub(r"[^\w.-]+", "-", normalized, flags=re.UNICODE).strip("-._")
-        return clean or "voice"
+        # The temporary legacy mirror still has to work on every supported desktop.
+        # Share the canonical Unicode-preserving and Windows-safe naming policy.
+        return safe_local_name(name, fallback="voice", casefold=False)
 
     @staticmethod
     def _sha256(path: Path) -> str:
@@ -136,6 +133,14 @@ class VoiceLibrary:
                 fallback.append(record)
         return (exact_legacy or fallback or [None])[0]
 
+    def _legacy_slug_for_record(self, record, fallback: str) -> str:
+        if record is None:
+            return self._slug(fallback)
+        current = record.profile.metadata.get("legacy_slug")
+        if current:
+            return self._slug(str(current))
+        return self._slug(record.profile.display_name or fallback)
+
     def _register_reference(self, slug: str, path: Path):
         return self.artifact_store.register_file(
             path,
@@ -175,7 +180,7 @@ class VoiceLibrary:
             return None
 
     def _migrate_legacy_file(self, path: Path) -> None:
-        slug = path.stem
+        slug = self._slug(path.stem)
         self._backup_legacy_pair(slug)
         analysis = self._legacy_analysis_from_json(slug, path) or self.inspect(path, slug)
         artifact = self._register_reference(slug, path)
@@ -340,7 +345,7 @@ class VoiceLibrary:
         analysis = self._legacy_analysis_from_json(slug, path) or self.inspect(path, slug)
         self._write_metadata(analysis)
         if record is not None:
-            self._sync_analysis(record, slug, analysis)
+            self._sync_analysis(record, self._legacy_slug_for_record(record, slug), analysis)
         else:
             try:
                 self._migrate_legacy_file(path)
@@ -358,6 +363,12 @@ class VoiceLibrary:
         if not source.exists():
             raise FileNotFoundError("The uploaded reference audio is no longer available.")
         slug = self._slug(display_name or source.stem)
+        record = self._record_for_name(slug)
+        if record is not None:
+            current_slug = self._legacy_slug_for_record(record, slug)
+            current_display = self._slug(record.profile.display_name)
+            if slug not in {current_slug, current_display}:
+                raise FileExistsError("That voice name is retained as an alias for an existing voice. Choose another name.")
         destination = self._legacy_path(slug)
         if destination.exists() and destination.resolve() != source:
             self._backup_legacy_pair(slug)
@@ -368,7 +379,6 @@ class VoiceLibrary:
         artifact = self._register_reference(slug, destination)
         metadata = self._metadata_for(slug, analysis, migration_source="voice-library-facade")
 
-        record = self._record_for_name(slug)
         if record is None:
             self.profile_store.create(
                 slug,
@@ -394,14 +404,18 @@ class VoiceLibrary:
         source = self.path_for(name)
         if source is None:
             raise FileNotFoundError("Voice profile not found.")
-        old_slug = self._slug(name)
+        record = self._record_for_name(name)
+        old_slug = self._legacy_slug_for_record(record, self._slug(name))
         slug = self._slug(new_name)
         destination = self._legacy_path(slug)
         legacy_source = self._legacy_path(old_slug)
+
+        owner = self._record_for_name(slug)
+        if owner is not None and (record is None or owner.profile.profile_id != record.profile.profile_id):
+            raise FileExistsError("A voice with that name or compatibility alias already exists.")
         if destination.exists() and destination != legacy_source:
             raise FileExistsError("A voice with that name already exists.")
 
-        record = self._record_for_name(name)
         if legacy_source.exists() and destination != legacy_source:
             legacy_source.replace(destination)
         old_meta = self.metadata_path(old_slug)
@@ -420,7 +434,6 @@ class VoiceLibrary:
             profile = replace(record.profile, display_name=slug, metadata=metadata)
             self.profile_store.save(StoredVoiceProfile(profile=profile, created_at=record.created_at))
 
-        # Refresh the temporary mirror's advisory metadata with the new display name.
         actual = destination if destination.exists() else source
         self._write_metadata(self.inspect(actual, slug))
         return slug
@@ -432,8 +445,7 @@ class VoiceLibrary:
         base = self._slug(new_name or f"{name}-copy")
         slug = base
         index = 2
-        existing_names = set(self.list())
-        while slug in existing_names or self._legacy_path(slug).exists():
+        while self._record_for_name(slug) is not None or self._legacy_path(slug).exists():
             slug = f"{base}-{index}"
             index += 1
         destination = self._legacy_path(slug)
@@ -453,8 +465,8 @@ class VoiceLibrary:
         return slug
 
     def delete(self, name: str) -> bool:
-        slug = self._slug(name)
         record = self._record_for_name(name)
+        slug = self._legacy_slug_for_record(record, self._slug(name))
         legacy = self._legacy_path(slug)
         existed = bool(record is not None or legacy.exists())
         if legacy.exists():
