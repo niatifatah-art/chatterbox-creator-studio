@@ -85,19 +85,21 @@ class EngineProtocol(Protocol):
 
 EngineFactory = Callable[[Path], EngineProtocol]
 ProgressCallback = Callable[[str, int | None, int | None], None]
+ExecutionResultCallback = Callable[[GenerationResultProtocol], None]
 
-# Phase 2 deliberately proves the public Core boundary with the existing Chatterbox
+# Phase 2/3 deliberately prove the public Core boundary with the existing Chatterbox
 # implementation only. The router may catalogue future engines, but execution must
 # never fall through into the wrong adapter. Phase 4 replaces this guard with generic
 # engine-family dispatch once isolated runtimes/adapters exist.
-PHASE2_EXECUTION_FAMILIES = frozenset({"chatterbox"})
+CURRENT_EXECUTION_FAMILIES = frozenset({"chatterbox"})
 
 
 def _default_engine_factory(output_dir: Path) -> EngineProtocol:
-    # Import lazily so protocol/discovery tests never import the ML implementation.
-    from studio.engine import ChatterboxEngine
+    # Product/controller construction uses the Core-backed compatibility facade. Core
+    # itself must call the native implementation or it would recursively call itself.
+    from studio.engine import NativeChatterboxEngine
 
-    return ChatterboxEngine(output_dir)
+    return NativeChatterboxEngine(output_dir)
 
 
 def _notify(callback: ProgressCallback | None, stage: str, current: int | None = None, total: int | None = None) -> None:
@@ -116,15 +118,13 @@ def _wav_duration(path: Path) -> float:
             return frames / float(rate)
     except (wave.Error, EOFError, OSError):
         pass
-    # Chatterbox/torchaudio may emit a WAV encoding the stdlib reader cannot inspect.
-    # Keep the fallback lazy so model-free tests do not acquire torch/torchaudio.
     try:
         import torchaudio as ta
 
         info = ta.info(str(path))
         if info.sample_rate:
             return info.num_frames / float(info.sample_rate)
-    except Exception as exc:  # pragma: no cover - exercised only by non-PCM backends
+    except Exception as exc:  # pragma: no cover - non-PCM backend only
         raise SynthesisError(
             SpeechErrorKind.GENERATION_FAILED,
             "Generated audio could not be inspected.",
@@ -134,8 +134,6 @@ def _wav_duration(path: Path) -> float:
 
 
 def _safe_generation_metadata(result: GenerationResultProtocol, settings: SynthesisExecutionSettings) -> dict[str, Any]:
-    # Keep content/path-bearing legacy metadata private. Public artifact metadata should
-    # be useful to downstream automation without leaking scripts or machine locations.
     return {
         "seed": int(result.seed),
         "chunk_count": int(result.chunk_count),
@@ -148,9 +146,11 @@ def _safe_generation_metadata(result: GenerationResultProtocol, settings: Synthe
 class SpeechSynthesisService:
     """Reusable Speech Core synthesis service.
 
-    Phase 2 proves the boundary with the already-supported Chatterbox routes. It does
-    not silently download models, does not know about Gradio/ACE accounts, and returns
-    only durable logical artifacts.
+    The default sidecar lifecycle releases the ML engine after each request. Product
+    migration clients may inject one process-owned Chatterbox engine and set
+    `release_engine_after_request=False` so repeated takes/Compare/Best-of preserve the
+    existing in-memory model behavior. That optimization is internal; public request
+    semantics stay identical.
     """
 
     def __init__(
@@ -161,15 +161,15 @@ class SpeechSynthesisService:
         artifact_store: ArtifactStore | None = None,
         model_manager: ModelManagerProtocol | None = None,
         engine_factory: EngineFactory | None = None,
+        release_engine_after_request: bool = True,
     ):
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.profile_store = profile_store or VoiceProfileStore(self.data_dir / "voice-profiles")
         self.artifact_store = artifact_store or ArtifactStore(self.data_dir / "artifacts")
-        # The existing product keeps model_state.json beside the speech-core directory.
-        # This default preserves that layout without making it part of the public API.
         self.model_manager = model_manager or LocalModelManager(self.data_dir.parent / "model_state.json")
         self.engine_factory = engine_factory or _default_engine_factory
+        self.release_engine_after_request = bool(release_engine_after_request)
         self.work_dir = self.data_dir / "generation-work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -264,14 +264,12 @@ class SpeechSynthesisService:
         *,
         execution: SynthesisExecutionSettings | None = None,
         progress_callback: ProgressCallback | None = None,
+        result_callback: ExecutionResultCallback | None = None,
     ) -> SpeechArtifact:
         text = (request.text or "").strip()
         if not text:
             raise SynthesisError(SpeechErrorKind.INVALID_ARGUMENT, "Text is required.")
         if request.events:
-            # Semantic event positioning needs one exact cross-engine definition before
-            # it is exposed. Existing `[pause=...]` text remains supported through the
-            # proven Chatterbox engine during migration; events are never ignored.
             raise SynthesisError(
                 SpeechErrorKind.INVALID_ARGUMENT,
                 "Structured speech events are not executable in this synthesis phase yet.",
@@ -288,7 +286,7 @@ class SpeechSynthesisService:
 
             decision = self._select_route(request, profile, language)
             manifest = ENGINE_MANIFESTS[decision.engine_id]
-            if manifest.family not in PHASE2_EXECUTION_FAMILIES:
+            if manifest.family not in CURRENT_EXECUTION_FAMILIES:
                 raise SynthesisError(
                     SpeechErrorKind.ENGINE_UNAVAILABLE,
                     f"{manifest.display_name} is catalogued but does not have a local execution adapter in this Speech Core build yet.",
@@ -309,9 +307,6 @@ class SpeechSynthesisService:
                     data={"engine_id": manifest.engine_id, "model_id": model_id},
                 )
             if binding is not None and binding.model_revision and status.revision != binding.model_revision:
-                # A calibrated voice binding is a reproducibility promise. Until the
-                # generic model manager can select any retained historical snapshot,
-                # fail closed rather than silently speaking with a different revision.
                 raise SynthesisError(
                     SpeechErrorKind.MODEL_NOT_INSTALLED,
                     "The voice is pinned to a different model revision than the one currently selected.",
@@ -376,11 +371,14 @@ class SpeechSynthesisService:
                     mime_type="audio/wav",
                     copy=True,
                 )
+                # The callback is internal migration plumbing. It runs while the private
+                # engine result still exists so the legacy UI can preserve its current
+                # WAV/JSON output/history contract while generation itself is Core-owned.
+                if result_callback is not None:
+                    result_callback(result)
+
                 recipe_revision = settings.recipe_revision
                 if recipe_revision is None and binding is not None and binding.recipe_revision is not None:
-                    # Record a binding recipe revision only when it is the current preferred
-                    # engine: generic recipe application is implemented in the calibration
-                    # phase. This avoids claiming an unapplied candidate recipe.
                     if profile.profile.preferred_engine_id == decision.engine_id:
                         recipe_revision = str(binding.recipe_revision)
                 public_metadata = _safe_generation_metadata(result, settings)
@@ -406,7 +404,7 @@ class SpeechSynthesisService:
                     metadata=public_metadata,
                 )
             finally:
-                if engine is not None:
+                if engine is not None and self.release_engine_after_request:
                     try:
                         unload = getattr(engine, "unload", None)
                         if callable(unload):
