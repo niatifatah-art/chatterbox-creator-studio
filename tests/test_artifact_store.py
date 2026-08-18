@@ -39,6 +39,19 @@ def test_deterministic_registration_is_idempotent_but_never_overwrites_other_con
     assert store.resolve(a).read_bytes() == b"same"
 
 
+def test_same_logical_id_cannot_be_ambiguous_across_extensions(tmp_path):
+    wav = tmp_path / "clip.wav"
+    mp3 = tmp_path / "clip.mp3"
+    wav.write_bytes(b"same-bytes")
+    mp3.write_bytes(b"same-bytes")
+    store = ArtifactStore(tmp_path / "artifacts")
+
+    ref = store.register_file(wav, artifact_id="clip")
+    with pytest.raises(FileExistsError, match="another stored file"):
+        store.register_file(mp3, artifact_id="clip")
+    assert store.resolve(ref).suffix == ".wav"
+
+
 def test_unicode_artifact_ids_remain_distinct_and_windows_device_names_are_avoided(tmp_path):
     first = tmp_path / "first.wav"
     second = tmp_path / "second.wav"
@@ -67,6 +80,17 @@ def test_resolve_detects_tampered_artifact_when_hash_is_known(tmp_path):
 
     with pytest.raises(ValueError, match="integrity"):
         store.resolve(ref)
+
+
+def test_resolve_rejects_preexisting_ambiguous_store_state(tmp_path):
+    directory = tmp_path / "artifacts"
+    directory.mkdir()
+    (directory / "clip.wav").write_bytes(b"wav")
+    (directory / "clip.mp3").write_bytes(b"mp3")
+    store = ArtifactStore(directory)
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        store.resolve(ArtifactRef("clip", "audio/wav", "local://artifacts/clip"))
 
 
 def test_non_copy_registration_cannot_point_outside_store(tmp_path):
