@@ -23,6 +23,34 @@ def test_register_file_hides_absolute_source_path(tmp_path):
     assert store.resolve(ref).read_bytes() == source.read_bytes()
 
 
+def test_deterministic_registration_is_idempotent_but_never_overwrites_other_content(tmp_path):
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    first.write_bytes(b"same")
+    second.write_bytes(b"different")
+    store = ArtifactStore(tmp_path / "artifacts")
+
+    a = store.register_file(first, artifact_id="voice-reference")
+    b = store.register_file(first, artifact_id="voice-reference")
+    assert a.sha256 == b.sha256
+
+    with pytest.raises(FileExistsError):
+        store.register_file(second, artifact_id="voice-reference")
+    assert store.resolve(a).read_bytes() == b"same"
+
+
+def test_resolve_detects_tampered_artifact_when_hash_is_known(tmp_path):
+    source = tmp_path / "voice.wav"
+    source.write_bytes(b"good")
+    store = ArtifactStore(tmp_path / "artifacts")
+    ref = store.register_file(source, artifact_id="voice")
+    stored = store.resolve(ref)
+    stored.write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="integrity"):
+        store.resolve(ref)
+
+
 def test_non_copy_registration_cannot_point_outside_store(tmp_path):
     source = tmp_path / "outside.wav"
     source.write_bytes(b"audio")
