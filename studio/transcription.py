@@ -6,13 +6,35 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class TranscriptionWord:
+    start: float
+    end: float
+    text: str
+    probability: float | None = None
+
+    def as_dict(self) -> dict[str, float | str | None]:
+        return {
+            "start": self.start,
+            "end": self.end,
+            "text": self.text,
+            "probability": self.probability,
+        }
+
+
+@dataclass(frozen=True)
 class TranscriptionSegment:
     start: float
     end: float
     text: str
+    words: tuple[TranscriptionWord, ...] = ()
 
-    def as_dict(self) -> dict[str, float | str]:
-        return {"start": self.start, "end": self.end, "text": self.text}
+    def as_dict(self) -> dict:
+        return {
+            "start": self.start,
+            "end": self.end,
+            "text": self.text,
+            "words": [word.as_dict() for word in self.words],
+        }
 
 
 @dataclass(frozen=True)
@@ -22,6 +44,7 @@ class TranscriptionResult:
     language_probability: float | None
     duration_seconds: float | None
     segments: tuple[TranscriptionSegment, ...]
+    engine_id: str = "faster-whisper"
 
 
 @lru_cache(maxsize=4)
@@ -88,6 +111,7 @@ def transcribe_audio(
         str(path),
         language=selected_language or None,
         vad_filter=True,
+        word_timestamps=True,
         beam_size=5 if mode == "Best" or selected_size == "small" else 3,
     )
     rows: list[TranscriptionSegment] = []
@@ -97,11 +121,26 @@ def transcribe_audio(
         if not text:
             continue
         texts.append(text)
+        word_rows: list[TranscriptionWord] = []
+        for word in getattr(segment, "words", None) or ():
+            token = (getattr(word, "word", "") or "").strip()
+            if not token:
+                continue
+            probability = getattr(word, "probability", None)
+            word_rows.append(
+                TranscriptionWord(
+                    start=round(float(word.start), 3),
+                    end=round(float(word.end), 3),
+                    text=token,
+                    probability=float(probability) if probability is not None else None,
+                )
+            )
         rows.append(
             TranscriptionSegment(
                 start=round(float(segment.start), 3),
                 end=round(float(segment.end), 3),
                 text=text,
+                words=tuple(word_rows),
             )
         )
     duration = rows[-1].end if rows else None
