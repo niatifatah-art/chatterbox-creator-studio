@@ -37,6 +37,13 @@ class ArtifactStore:
                 digest.update(block)
         return digest.hexdigest()
 
+    def _paths_for_id(self, safe_id: str) -> list[Path]:
+        rows = {path.resolve() for path in self.directory.glob(f"{safe_id}.*") if path.is_file()}
+        direct = (self.directory / safe_id).resolve()
+        if direct.is_file():
+            rows.add(direct)
+        return sorted(rows)
+
     def register_file(
         self,
         source: str | Path,
@@ -57,6 +64,13 @@ class ArtifactStore:
 
         source_hash = self._sha256(source_path)
         if copy:
+            existing = self._paths_for_id(safe_id)
+            other = [path for path in existing if path != destination]
+            if other:
+                # ArtifactRef URIs contain only the logical ID, not a suffix. Allowing
+                # both `id.wav` and `id.mp3` would make resolution ambiguous even when
+                # the bytes happen to match.
+                raise FileExistsError(f"Artifact ID '{safe_id}' already belongs to another stored file.")
             if destination.exists() and destination != source_path:
                 # Deterministic IDs are useful for idempotent migrations, but they must
                 # never turn into an accidental overwrite primitive.
@@ -69,6 +83,9 @@ class ArtifactStore:
                 raise ValueError("Non-copy registration is allowed only for files already inside the artifact store.")
             destination = source_path
             safe_id = destination.stem
+            existing = self._paths_for_id(safe_id)
+            if len(existing) > 1:
+                raise ValueError(f"Artifact ID '{safe_id}' is ambiguous inside the local store.")
 
         detected_mime = mime_type or mimetypes.guess_type(destination.name)[0] or "application/octet-stream"
         return ArtifactRef(
@@ -86,15 +103,12 @@ class ArtifactStore:
         if not identifier or "/" in identifier or "\\" in identifier or identifier in {".", ".."}:
             raise ValueError("Invalid local artifact identifier.")
         safe_id = self._safe_id(identifier)
-        candidates = sorted(self.directory.glob(f"{safe_id}.*"))
-        if not candidates:
-            # Extensionless artifacts are valid too.
-            direct = (self.directory / safe_id).resolve()
-            if direct.is_file() and self.directory in direct.parents:
-                candidates = [direct]
+        candidates = self._paths_for_id(safe_id)
         if not candidates:
             raise FileNotFoundError(f"Local artifact '{safe_id}' is missing.")
-        path = candidates[0].resolve()
+        if len(candidates) != 1:
+            raise ValueError(f"Local artifact '{safe_id}' is ambiguous.")
+        path = candidates[0]
         if self.directory not in path.parents:
             raise ValueError("Resolved artifact escaped the local artifact store.")
         if artifact.sha256 and self._sha256(path) != artifact.sha256:
