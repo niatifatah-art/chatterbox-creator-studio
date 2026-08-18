@@ -39,6 +39,24 @@ def test_deterministic_registration_is_idempotent_but_never_overwrites_other_con
     assert store.resolve(a).read_bytes() == b"same"
 
 
+def test_unicode_artifact_ids_remain_distinct_and_windows_device_names_are_avoided(tmp_path):
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    first.write_bytes(b"same")
+    second.write_bytes(b"same")
+    store = ArtifactStore(tmp_path / "artifacts")
+
+    ar = store.register_file(first, artifact_id="صوت-مرجعي")
+    ja = store.register_file(second, artifact_id="音声-参照")
+    assert ar.artifact_id != ja.artifact_id
+    assert store.resolve(ar).read_bytes() == b"same"
+    assert store.resolve(ja).read_bytes() == b"same"
+
+    device = store.register_file(first, artifact_id="CON")
+    assert device.artifact_id.casefold() != "con"
+    assert store.resolve(device).is_file()
+
+
 def test_resolve_detects_tampered_artifact_when_hash_is_known(tmp_path):
     source = tmp_path / "voice.wav"
     source.write_bytes(b"good")
