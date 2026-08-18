@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
-from .engine import ChatterboxEngine, GenerationResult
+from .engine import GenerationResult
 from .preprocess import PreprocessOptions, ProcessedText, process_text
 from .quality import QualityReport, VerificationReport, analyze_audio, verify_with_faster_whisper
+
+
+class GenerationEngine(Protocol):
+    """Structural contract used by reliability/Best-of orchestration.
+
+    Reliability owns candidate policy; Speech Core owns synthesis. Keeping this module
+    structurally typed prevents another engine family from becoming a dependency here.
+    """
+
+    def generate(self, script: str, **generation_kwargs: Any) -> GenerationResult: ...
 
 
 @dataclass(frozen=True)
@@ -78,7 +88,7 @@ def _annotate_metadata(
 
 
 def generate_reliably(
-    engine: ChatterboxEngine,
+    engine: GenerationEngine,
     script: str,
     policy: GenerationPolicy | None = None,
     **generation_kwargs: Any,
