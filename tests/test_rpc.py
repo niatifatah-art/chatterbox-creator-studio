@@ -132,6 +132,26 @@ def test_stdio_client_surfaces_semantic_rpc_errors(tmp_path):
         assert exc.value.kind == SpeechErrorKind.NOT_FOUND.value
 
 
+def test_client_protocol_info_falls_back_to_v1_health_shape():
+    client = SpeechRpcClient([sys.executable, "-c", "pass"])
+
+    def fake_call(method: str, _params=None):
+        if method == "protocol.info":
+            raise SpeechRpcClientError(-32601, "Method not found")
+        assert method == "health"
+        return {
+            "status": "ok",
+            "rpc_protocol_version": RPC_PROTOCOL_VERSION,
+            "speech_schema_version": SPEECH_SCHEMA_VERSION,
+            "transport": "stdio-jsonl",
+        }
+
+    client.call = fake_call  # type: ignore[method-assign]
+    info = client.ensure_compatible()
+    assert info["rpc_protocol_version"] == RPC_PROTOCOL_VERSION
+    assert info["speech_schema_version"] == SPEECH_SCHEMA_VERSION
+
+
 def test_client_fails_early_for_non_overlapping_protocol_range():
     client = SpeechRpcClient([sys.executable, "-c", "pass"])
     client.protocol_info = lambda: {  # type: ignore[method-assign]
