@@ -57,8 +57,14 @@ class ArtifactStore:
         if self.directory not in destination.parents:
             raise ValueError("Artifact destination escaped the local artifact store.")
 
+        source_hash = self._sha256(source_path)
         if copy:
-            if destination != source_path:
+            if destination.exists() and destination != source_path:
+                # Deterministic IDs are useful for idempotent migrations, but they must
+                # never turn into an accidental overwrite primitive.
+                if self._sha256(destination) != source_hash:
+                    raise FileExistsError(f"Artifact ID '{safe_id}' already refers to different content.")
+            elif destination != source_path:
                 shutil.copy2(source_path, destination)
         else:
             if self.directory not in source_path.parents:
@@ -72,7 +78,7 @@ class ArtifactStore:
             mime_type=detected_mime,
             uri=f"{self.URI_PREFIX}{safe_id}",
             size_bytes=destination.stat().st_size,
-            sha256=self._sha256(destination),
+            sha256=source_hash,
         )
 
     def resolve(self, artifact: ArtifactRef) -> Path:
@@ -93,6 +99,8 @@ class ArtifactStore:
         path = candidates[0].resolve()
         if self.directory not in path.parents:
             raise ValueError("Resolved artifact escaped the local artifact store.")
+        if artifact.sha256 and self._sha256(path) != artifact.sha256:
+            raise ValueError(f"Local artifact '{safe_id}' failed its integrity check.")
         return path
 
     def remove(self, artifact: ArtifactRef) -> bool:
