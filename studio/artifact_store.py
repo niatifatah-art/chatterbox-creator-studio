@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
-import re
 import shutil
 import uuid
 from pathlib import Path
 
+from studio.naming import safe_local_name
 from studio.protocol import ArtifactRef
 
 
@@ -26,9 +26,7 @@ class ArtifactStore:
     @staticmethod
     def _safe_id(value: str | None) -> str:
         if value:
-            clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-._").lower()
-            if clean:
-                return clean
+            return safe_local_name(value, fallback="artifact", casefold=True)
         return uuid.uuid4().hex
 
     @staticmethod
