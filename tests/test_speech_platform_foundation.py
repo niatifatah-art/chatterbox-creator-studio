@@ -12,7 +12,9 @@ from studio.protocol import (
     VoiceSource,
     VoiceSourceKind,
 )
+from studio.settings import DEFAULT_SETTINGS
 from studio.speech_router import RouteRequest, route
+from studio.telemetry import Telemetry, TelemetryConfig
 
 
 def test_protocol_serializes_without_absolute_machine_paths():
@@ -118,3 +120,27 @@ def test_manual_override_rejects_unsupported_language():
         assert "does not support language" in str(exc)
     else:
         raise AssertionError("English-only manual override should not accept Arabic")
+
+
+def test_telemetry_is_off_by_default():
+    assert DEFAULT_SETTINGS["telemetry_enabled"] is False
+    telemetry = Telemetry(TelemetryConfig(enabled=False, project_token="ph_test"))
+    assert telemetry.capture("studio_opened", {"engine_id": "chatterbox-v3"}) is False
+
+
+def test_telemetry_drops_user_content_properties():
+    safe = Telemetry._safe_properties(
+        {
+            "engine_id": "chatterbox-v3",
+            "priority": "auto",
+            "script": "private text",
+            "transcript": "private transcript",
+            "voice_path": "C:/private/voice.wav",
+            "account_name": "private account",
+        }
+    )
+    assert safe["engine_id"] == "chatterbox-v3"
+    assert "script" not in safe
+    assert "transcript" not in safe
+    assert "voice_path" not in safe
+    assert "account_name" not in safe
