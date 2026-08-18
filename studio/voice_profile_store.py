@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
-import unicodedata
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from studio.naming import safe_local_name
 from studio.protocol import ArtifactRef, EngineBinding, VoiceProfile, VoiceSource, VoiceSourceKind
 
 
@@ -65,12 +64,7 @@ class VoiceProfileStore:
 
     @staticmethod
     def _safe_id(value: str) -> str:
-        # Python's Unicode regex mode makes \w include Unicode alphanumeric
-        # characters. NFKC prevents visually equivalent compatibility forms from
-        # becoming different filenames while path separators/punctuation are removed.
-        normalized = unicodedata.normalize("NFKC", (value or "voice").strip())
-        clean = re.sub(r"[^\w.-]+", "-", normalized, flags=re.UNICODE).strip("-._").casefold()
-        return clean or "voice"
+        return safe_local_name(value, fallback="voice", casefold=True)
 
     def path_for(self, profile_id: str) -> Path:
         return self.directory / f"{self._safe_id(profile_id)}.json"
