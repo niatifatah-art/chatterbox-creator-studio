@@ -95,10 +95,11 @@ CURRENT_EXECUTION_FAMILIES = frozenset({"chatterbox"})
 
 
 def _default_engine_factory(output_dir: Path) -> EngineProtocol:
-    # Import lazily so protocol/discovery tests never import the ML implementation.
-    from studio.engine import ChatterboxEngine
+    # Product/controller construction uses the Core-backed compatibility facade. Core
+    # itself must call the native implementation or it would recursively call itself.
+    from studio.engine import NativeChatterboxEngine
 
-    return ChatterboxEngine(output_dir)
+    return NativeChatterboxEngine(output_dir)
 
 
 def _notify(callback: ProgressCallback | None, stage: str, current: int | None = None, total: int | None = None) -> None:
