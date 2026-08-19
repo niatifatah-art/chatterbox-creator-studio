@@ -36,11 +36,23 @@ def test_current_chatterbox_routes_are_manifest_driven():
         assert asset.weights_license == "MIT"
 
 
-def test_future_tts_families_are_catalogued_without_guessed_model_assets():
-    for engine_id in ("kokoro", "qwen3-tts"):
-        engine = ENGINE_MANIFESTS[engine_id]
-        assert engine.status == EngineStatus.CATALOGUED
-        assert engine.model_ids == ()
-        runtime = RUNTIME_MANIFESTS[engine.runtime_id]
-        assert runtime.install_mode == RuntimeInstallMode.ISOLATED
-        assert runtime.requirements == ()
+def test_kokoro_has_audited_isolated_runtime_and_model_but_is_not_auto_yet():
+    engine = ENGINE_MANIFESTS["kokoro"]
+    assert engine.status == EngineStatus.CATALOGUED
+    assert engine.model_ids == ("kokoro-v1.0",)
+    assert engine.languages == ("en",)
+    runtime = runtime_for_engine("kokoro")
+    assert runtime.install_mode == RuntimeInstallMode.ISOLATED
+    assert runtime.requirements == ("kokoro==0.9.4",)
+    asset = MODEL_ASSET_MANIFESTS["kokoro-v1.0"]
+    assert asset.repo_id == "hexgrad/Kokoro-82M"
+    assert asset.weights_license == "Apache-2.0"
+
+
+def test_qwen_remains_catalogued_without_guessed_runtime_or_model_assets():
+    engine = ENGINE_MANIFESTS["qwen3-tts"]
+    assert engine.status == EngineStatus.CATALOGUED
+    assert engine.model_ids == ()
+    runtime = RUNTIME_MANIFESTS[engine.runtime_id]
+    assert runtime.install_mode == RuntimeInstallMode.ISOLATED
+    assert runtime.requirements == ()
