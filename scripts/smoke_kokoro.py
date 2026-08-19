@@ -12,7 +12,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from studio.engine_manager import EngineManager
-from studio.protocol import SpeechSynthesisRequest, VoiceSourceKind
+from studio.protocol import SpeechSynthesisRequest
+from studio.ready_voices import create_ready_voice_profile
 from studio.synthesis import SpeechSynthesisService
 from studio.voice_profile_store import VoiceProfileStore
 
@@ -21,11 +22,11 @@ SMOKE_TEXT = (
     "A reliable local voice tool should be simple for creators and predictable for developers. "
     "This smoke test installs the lightweight Kokoro runtime in its own environment, downloads the "
     "official model and ready voice assets once, then deliberately switches the synthesis process to "
-    "offline mode. The Speech Core receives only a voice profile, text, language, and a generic engine "
-    "override. It must return a valid logical speech artifact with the exact model revision in provenance, "
-    "without a clone reference and without downloading anything while speech is generated. This sample is "
-    "long enough to exercise normal English phrasing rather than a tiny one word demo, while remaining "
-    "small enough for a practical continuous integration check."
+    "offline mode. The Speech Core receives only a stable voice profile, text, and language. The profile "
+    "already owns its ready-voice engine identity, so the caller does not need provider knowledge. It must "
+    "return a valid logical speech artifact with the exact model revision in provenance, without a clone "
+    "reference and without downloading anything while speech is generated. This sample is long enough to "
+    "exercise normal English phrasing rather than a tiny one word demo while remaining practical for CI."
 )
 
 
@@ -42,7 +43,10 @@ def main() -> int:
     data_root = output_dir / "data"
 
     manager = EngineManager(data_root)
-    runtime = manager.install_runtime("kokoro") if not manager.status("kokoro").runtime.ready else manager.status("kokoro").runtime
+    engine_status = manager.status("kokoro")
+    runtime = engine_status.runtime
+    if runtime is None or not runtime.ready:
+        runtime = manager.install_runtime("kokoro")
     if runtime is None or not runtime.ready:
         raise RuntimeError("Kokoro isolated runtime did not become ready.")
 
@@ -54,12 +58,14 @@ def main() -> int:
     speech_dir = data_root / "speech-core"
     profiles = VoiceProfileStore(speech_dir / "voice-profiles")
     if profiles.get("kokoro-heart") is None:
-        profiles.create(
+        create_ready_voice_profile(
+            profiles,
             "kokoro-heart",
-            "Kokoro Heart",
-            source_kind=VoiceSourceKind.READY,
-            source_voice_id="af_heart",
-            supported_languages=("en",),
+            engine_id="kokoro",
+            voice_id="af_heart",
+            display_name="Kokoro Heart",
+            model_id="kokoro-v1.0",
+            model_revision=model.revision,
             metadata={"smoke_fixture": True},
         )
 
@@ -72,7 +78,6 @@ def main() -> int:
             text=SMOKE_TEXT,
             voice_profile_id="kokoro-heart",
             language="en",
-            engine_override="kokoro",
         )
     )
 
