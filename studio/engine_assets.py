@@ -13,13 +13,6 @@ class RuntimeKind(str, Enum):
 
 
 class RuntimeInstallMode(str, Enum):
-    """How a runtime is currently provisioned.
-
-    `host_legacy` exists only while the shipped Gradio application still installs the
-    Chatterbox dependency in its main environment. New conflicting engine families must
-    use an isolated runtime rather than extending the host environment indefinitely.
-    """
-
     HOST_LEGACY = "host_legacy"
     ISOLATED = "isolated"
 
@@ -32,10 +25,7 @@ class RuntimeManifest:
     install_mode: RuntimeInstallMode = RuntimeInstallMode.ISOLATED
     python_spec: str = ">=3.10,<3.14"
     requirements: tuple[str, ...] = ()
-    # Optional bootstrap packages are installed before the main requirements. This is
-    # useful when a dependency family has a platform-specific official package index,
-    # such as a CPU-only PyTorch wheel. Keeping it in the manifest makes the runtime
-    # reproducible instead of relying on whichever GPU wheel PyPI happens to resolve.
+    no_deps_requirements: tuple[str, ...] = ()
     bootstrap_requirements: tuple[str, ...] = ()
     bootstrap_index_url: str | None = None
     source_revision: str | None = None
@@ -47,8 +37,6 @@ class RuntimeManifest:
 
 @dataclass(frozen=True, slots=True)
 class ModelAssetManifest:
-    """Downloadable model asset independent from the runtime that executes it."""
-
     model_id: str
     runtime_id: str
     provider: ModelProvider
@@ -66,6 +54,11 @@ CHATTERBOX_UPSTREAM_REVISION = "5de7a54aa4e5e2baadb0182dde554908b48b85c2"
 KOKORO_PACKAGE_VERSION = "0.9.4"
 KOKORO_CPU_TORCH_VERSION = "2.13.0"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+SPACY_EN_SM_WHEEL = (
+    "en-core-web-sm @ "
+    "https://github.com/explosion/spacy-models/releases/download/"
+    "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+)
 
 
 RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
@@ -87,21 +80,38 @@ RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
         display_name="Kokoro CPU Runtime",
         install_mode=RuntimeInstallMode.ISOLATED,
         python_spec=">=3.10,<3.14",
-        requirements=(f"kokoro=={KOKORO_PACKAGE_VERSION}",),
+        # Install Kokoro itself without dependencies, then provide the exact English
+        # execution surface deliberately. This avoids bringing the optional eSpeak/
+        # phonemizer fallback into the lightweight runtime and prevents generation-time
+        # package/model downloads.
+        requirements=(
+            "huggingface-hub==1.28.0",
+            "loguru==0.7.3",
+            "misaki==0.9.4",
+            "num2words==0.5.14",
+            "numpy==2.4.2",
+            "spacy==3.8.11",
+            "transformers==5.15.1",
+            SPACY_EN_SM_WHEEL,
+        ),
+        no_deps_requirements=(f"kokoro=={KOKORO_PACKAGE_VERSION}",),
         bootstrap_requirements=(f"torch=={KOKORO_CPU_TORCH_VERSION}",),
         bootstrap_index_url=PYTORCH_CPU_INDEX,
         source_revision=KOKORO_PACKAGE_VERSION,
         code_license="Apache-2.0",
         distribution_name="kokoro",
         notes=(
-            "Official Kokoro 0.9.4 Python runtime with an explicitly CPU-only PyTorch bootstrap. "
-            "Kokoro is the lightweight ready-voice route, so installing gigabytes of CUDA libraries on a CPU machine would violate the product role. "
-            "English is certified first; later language/GPU routes require their own runtime audit."
+            "Audited English ready-voice runtime: CPU-only PyTorch, Kokoro 0.9.4, Misaki 0.9.4, "
+            "and the official spaCy English small pipeline. The optional eSpeak/phonemizer fallback is "
+            "intentionally omitted so this lightweight route remains deterministic and does not inherit "
+            "an external native-data dependency. OOV fallback is disabled; pronunciation hints/QA are the "
+            "future product-level recovery path."
         ),
         metadata={
             "upstream": "https://github.com/hexgrad/kokoro",
             "compute_tier": "cpu",
-            "english_ood_fallback": "espeak-ng-loader via misaki[en]",
+            "english_ood_fallback": "disabled",
+            "spacy_pipeline": "en_core_web_sm-3.8.0",
         },
     ),
     "qwen3-tts": RuntimeManifest(
@@ -139,44 +149,27 @@ MODEL_ASSET_MANIFESTS: dict[str, ModelAssetManifest] = {
         repo_id="ResembleAI/chatterbox",
         revision_ref="main",
         allow_patterns=(
-            "ve.pt",
-            "t3_mtl23ls_v3.safetensors",
-            "s3gen.pt",
-            "grapheme_mtl_merged_expanded_v1.json",
-            "conds.pt",
-            "Cangjie5_TC.json",
+            "ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen.pt",
+            "grapheme_mtl_merged_expanded_v1.json", "conds.pt", "Cangjie5_TC.json",
         ),
         expected_files=(
-            "ve.pt",
-            "t3_mtl23ls_v3.safetensors",
-            "s3gen.pt",
-            "grapheme_mtl_merged_expanded_v1.json",
-            "conds.pt",
-            "Cangjie5_TC.json",
+            "ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen.pt",
+            "grapheme_mtl_merged_expanded_v1.json", "conds.pt", "Cangjie5_TC.json",
         ),
         weights_license="MIT",
         notes="Chatterbox Multilingual V3 managed model asset.",
     ),
     "turbo": ModelAssetManifest(
-        model_id="turbo",
-        runtime_id="chatterbox",
-        provider=ModelProvider.HUGGINGFACE,
-        repo_id="ResembleAI/chatterbox-turbo",
-        revision_ref="main",
+        model_id="turbo", runtime_id="chatterbox", provider=ModelProvider.HUGGINGFACE,
+        repo_id="ResembleAI/chatterbox-turbo", revision_ref="main",
         allow_patterns=("*.safetensors", "*.json", "*.txt", "*.pt", "*.model", "*.yaml"),
-        weights_license="MIT",
-        estimated_size_gb=4.1,
-        notes="Chatterbox Turbo managed model asset.",
+        weights_license="MIT", estimated_size_gb=4.1, notes="Chatterbox Turbo managed model asset.",
     ),
     "nano": ModelAssetManifest(
-        model_id="nano",
-        runtime_id="chatterbox",
-        provider=ModelProvider.HUGGINGFACE,
-        repo_id="ResembleAI/chatterbox-nano",
-        revision_ref="main",
+        model_id="nano", runtime_id="chatterbox", provider=ModelProvider.HUGGINGFACE,
+        repo_id="ResembleAI/chatterbox-nano", revision_ref="main",
         allow_patterns=("*.safetensors", "*.json", "*.txt", "*.pt", "*.model", "*.yaml"),
-        weights_license="MIT",
-        notes="Chatterbox Nano managed model asset.",
+        weights_license="MIT", notes="Chatterbox Nano managed model asset.",
     ),
     "kokoro-v1.0": ModelAssetManifest(
         model_id="kokoro-v1.0",
@@ -188,14 +181,8 @@ MODEL_ASSET_MANIFESTS: dict[str, ModelAssetManifest] = {
         expected_files=("config.json", "kokoro-v1_0.pth"),
         weights_license="Apache-2.0",
         estimated_size_gb=0.36,
-        notes=(
-            "Official Kokoro v1.0 model plus ready-voice packs. Download selection resolves and stores the immutable Hub snapshot revision."
-        ),
-        metadata={
-            "serialization": "torch-pth-weights-only",
-            "ready_voice_directory": "voices",
-            "sample_rate": "24000",
-        },
+        notes="Official Kokoro v1.0 model plus ready-voice packs; selected by immutable resolved Hub revision.",
+        metadata={"serialization": "torch-pth-weights-only", "ready_voice_directory": "voices", "sample_rate": "24000"},
     ),
 }
 
@@ -215,8 +202,6 @@ def model_asset_manifest(model_id: str) -> ModelAssetManifest:
 
 
 def validate_asset_registry() -> None:
-    """Fail fast if a manifest points at an undefined runtime or invalid host identity."""
-
     for model_id, model in MODEL_ASSET_MANIFESTS.items():
         if model.model_id != model_id:
             raise ValueError(f"Model manifest key '{model_id}' disagrees with model_id '{model.model_id}'.")
@@ -228,9 +213,7 @@ def validate_asset_registry() -> None:
         if runtime.runtime_id != runtime_id:
             raise ValueError(f"Runtime manifest key '{runtime_id}' disagrees with runtime_id '{runtime.runtime_id}'.")
         if runtime.install_mode == RuntimeInstallMode.HOST_LEGACY and runtime.requirements and not runtime.distribution_name:
-            raise ValueError(
-                f"Host runtime '{runtime_id}' needs distribution_name for read-only readiness checks."
-            )
+            raise ValueError(f"Host runtime '{runtime_id}' needs distribution_name for read-only readiness checks.")
         if runtime.bootstrap_index_url and not runtime.bootstrap_requirements:
             raise ValueError(f"Runtime '{runtime_id}' declares a bootstrap index without bootstrap packages.")
 
