@@ -33,6 +33,33 @@ def test_catalogued_runtime_without_audited_requirements_is_not_installable(tmp_
     assert status.ready is False
 
 
+def test_host_runtime_uses_distribution_metadata_without_importing_engine(tmp_path, monkeypatch):
+    module = __import__("studio.runtime_manager", fromlist=["RUNTIME_MANIFESTS"])
+    manifest = RuntimeManifest(
+        runtime_id="host-test",
+        display_name="Host Test",
+        install_mode=RuntimeInstallMode.HOST_LEGACY,
+        requirements=("demo-dist==1.0",),
+        distribution_name="demo-dist",
+    )
+    monkeypatch.setitem(module.RUNTIME_MANIFESTS, manifest.runtime_id, manifest)
+
+    calls: list[str] = []
+
+    def fake_version(name: str) -> str:
+        calls.append(name)
+        return "1.0"
+
+    monkeypatch.setattr(module.importlib.metadata, "version", fake_version)
+    status = RuntimeManager(tmp_path / "runtimes").status(manifest.runtime_id)
+
+    assert calls == ["demo-dist"]
+    assert status.configured is True
+    assert status.installed is True
+    assert status.ready is True
+    assert status.environment_path is None
+
+
 def test_isolated_runtime_is_ready_only_when_environment_and_manifest_fingerprint_match(tmp_path, monkeypatch):
     module = __import__("studio.runtime_manager", fromlist=["RUNTIME_MANIFESTS"])
     manifest = _isolated()
