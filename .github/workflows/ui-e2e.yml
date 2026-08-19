@@ -28,10 +28,13 @@ concurrency:
 
 jobs:
   chromium:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # Pin the runner image because this workflow deliberately uses its preinstalled
+    # Google Chrome instead of downloading another browser and OS dependency bundle.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CREATOR_STUDIO_BASE_URL: http://127.0.0.1:7860
+      CREATOR_STUDIO_BROWSER_CHANNEL: chrome
       GRADIO_ANALYTICS_ENABLED: "False"
       UI_ARTIFACT_DIR: ui-artifacts
     steps:
@@ -39,11 +42,23 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: Install application and browser-test dependencies
+      - name: Install product shell and browser-test dependencies
         run: |
-          python -m pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt -r requirements-e2e.txt
-      - name: Install Chromium and system dependencies
-        run: python -m playwright install --with-deps chromium
+          python -m pip install --no-cache-dir -r requirements-ui.txt -r requirements-dev.txt -r requirements-e2e.txt
+      - name: Verify runner browser
+        run: google-chrome --version
+      - name: Import product shell without speech runtimes
+        run: |
+          python - <<'PY'
+          import sys
+          import product_app
+
+          heavy = ("torch", "torchaudio", "chatterbox", "qwen_tts", "faster_whisper")
+          leaked = [name for name in heavy if name in sys.modules]
+          if leaked:
+              raise SystemExit(f"Product shell imported heavy speech modules: {leaked}")
+          print("Product shell import ok without speech runtimes")
+          PY
       - name: Start product UI
         shell: bash
         run: |
