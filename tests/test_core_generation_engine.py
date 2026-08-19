@@ -130,23 +130,43 @@ def _core_backed_engine(tmp_path: Path, monkeypatch):
     return engine, library, name, saved_path
 
 
-def test_public_chatterbox_constructor_is_now_the_core_compatibility_facade(tmp_path, monkeypatch):
-    monkeypatch.setattr("studio.engine.detect_device", lambda: ("cpu", "CPU"))
+def test_public_chatterbox_constructor_is_now_the_core_compatibility_facade(tmp_path):
     engine = ChatterboxEngine(tmp_path / "outputs")
     assert isinstance(engine, CoreGenerationEngine)
 
 
-def test_legacy_set_model_path_synchronizes_native_and_core_model_state(tmp_path, monkeypatch):
+def test_core_facade_construction_is_model_free_and_native_engine_is_lazy(tmp_path, monkeypatch):
+    engine, _library, _name, _saved_path = _core_backed_engine(tmp_path, monkeypatch)
+
+    assert FakeNative.instances == []
+    assert engine.loaded is False
+    assert engine.loaded_model_id is None
+    assert engine.device == "cpu"
+    assert engine.device_label == "CPU"
+
+    engine.set_device("cuda", "GPU · test")
+    assert engine.device == "cuda"
+    assert engine.device_label == "GPU · test"
+    assert FakeNative.instances == []
+
+
+def test_legacy_set_model_path_synchronizes_core_state_without_eager_native_runtime(tmp_path, monkeypatch):
     engine, _library, _name, _saved_path = _core_backed_engine(tmp_path, monkeypatch)
     snapshot = tmp_path / "managed" / "snapshots" / "abc123"
     snapshot.mkdir(parents=True)
 
     engine.set_model_path("nano", snapshot)
 
-    assert Path(FakeNative.instances[0].model_paths["nano"]).resolve() == snapshot.resolve()
+    assert FakeNative.instances == []
     status = engine.model_manager.status("nano")
     assert Path(status.snapshot_path or "").resolve() == snapshot.resolve()
     assert status.revision == "abc123"
+
+    engine.load_model("nano")
+    assert len(FakeNative.instances) == 1
+    assert Path(FakeNative.instances[0].model_paths["nano"]).resolve() == snapshot.resolve()
+    assert engine.loaded is True
+    assert engine.loaded_model_id == "nano"
 
 
 def test_saved_legacy_voice_path_generates_through_core_and_preserves_history_files(tmp_path, monkeypatch):
@@ -200,6 +220,7 @@ def test_arbitrary_cli_reference_uses_ephemeral_profile_and_cleans_it_after_gene
 def test_process_owned_native_engine_is_reused_between_reliable_takes(tmp_path, monkeypatch):
     engine, _library, _name, saved_path = _core_backed_engine(tmp_path, monkeypatch)
 
+    assert FakeNative.instances == []
     first = engine.generate(script="Take one.", voice_path=saved_path, model_id="nano", language_id="en", seed=1)
     second = engine.generate(script="Take two.", voice_path=saved_path, model_id="nano", language_id="en", seed=2)
 
