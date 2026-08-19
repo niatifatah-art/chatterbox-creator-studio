@@ -107,9 +107,6 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         display_name="Kokoro Ready",
         family="kokoro",
         capabilities=frozenset({Capability.SYNTHESIZE, Capability.READY_VOICE}),
-        # Upstream ships additional languages, but several depend on extra G2P/system
-        # packages and upstream warns that non-English support may be thin. English is
-        # the first Phase 5 certified execution surface; other languages remain deferred.
         languages=("en",),
         resource_tier="ultra_light",
         code_license="Apache-2.0",
@@ -207,14 +204,20 @@ def engines_for(capability: Capability, *, include_catalogued: bool = False) -> 
 
 
 def validate_engine_registry() -> None:
+    """Validate executable/configured routes while allowing research-only catalogue rows.
+
+    A catalogue row may intentionally name a future runtime before that runtime is
+    audited. Once model assets are attached—or the route is promoted to supported—the
+    runtime/model links become mandatory and fail fast at import time.
+    """
+
     for engine_id, manifest in ENGINE_MANIFESTS.items():
         if manifest.engine_id != engine_id:
             raise ValueError(
                 f"Engine manifest key '{engine_id}' disagrees with engine_id '{manifest.engine_id}'."
             )
-        # Every route with configured model assets must resolve them even while it is
-        # still catalogued. This catches Phase 5/6 wiring mistakes before Auto promotion.
-        if manifest.runtime_id:
+        must_resolve_runtime = bool(manifest.model_ids) or manifest.status == EngineStatus.SUPPORTED
+        if must_resolve_runtime:
             runtime_for_engine(engine_id)
         for asset in model_assets_for_engine(engine_id):
             if asset.runtime_id != manifest.runtime_id:
