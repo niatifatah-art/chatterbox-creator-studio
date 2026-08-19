@@ -34,6 +34,10 @@ class RuntimeManifest:
     requirements: tuple[str, ...] = ()
     source_revision: str | None = None
     code_license: str | None = None
+    # Distribution metadata is different from the import-package name. It is required
+    # only for host-legacy readiness checks; isolated runtimes are verified by their
+    # app-owned environment/fingerprint instead.
+    distribution_name: str | None = None
     notes: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
 
@@ -71,6 +75,7 @@ RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
         ),
         source_revision=CHATTERBOX_UPSTREAM_REVISION,
         code_license="MIT",
+        distribution_name="chatterbox-tts",
         notes="Current shipped runtime. Phase 4 keeps host installation compatible while preparing isolated runtimes for new families.",
     ),
     "kokoro": RuntimeManifest(
@@ -173,7 +178,7 @@ def model_asset_manifest(model_id: str) -> ModelAssetManifest:
 
 
 def validate_asset_registry() -> None:
-    """Fail fast if a manifest points at an undefined runtime or duplicate identity."""
+    """Fail fast if a manifest points at an undefined runtime or invalid host identity."""
 
     for model_id, model in MODEL_ASSET_MANIFESTS.items():
         if model.model_id != model_id:
@@ -185,6 +190,10 @@ def validate_asset_registry() -> None:
     for runtime_id, runtime in RUNTIME_MANIFESTS.items():
         if runtime.runtime_id != runtime_id:
             raise ValueError(f"Runtime manifest key '{runtime_id}' disagrees with runtime_id '{runtime.runtime_id}'.")
+        if runtime.install_mode == RuntimeInstallMode.HOST_LEGACY and runtime.requirements and not runtime.distribution_name:
+            raise ValueError(
+                f"Host runtime '{runtime_id}' needs distribution_name for read-only readiness checks."
+            )
 
 
 validate_asset_registry()
