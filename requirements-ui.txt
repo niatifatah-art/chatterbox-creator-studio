@@ -1,0 +1,5 @@
+# Product-shell dependencies only.
+# Speech engines/runtimes are installed and managed separately by Speech Core.
+# Keep Gradio aligned with the pinned Chatterbox product dependency until the UI
+# moves to the planned desktop shell.
+gradio==6.8.0

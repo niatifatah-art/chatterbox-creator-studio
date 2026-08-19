@@ -36,10 +36,12 @@ def test_rpc_health_protocol_and_engine_discovery_are_model_free(tmp_path):
     assert engines is not None
     rows = {row["engine_id"]: row for row in engines["result"]}
     assert "chatterbox-v3" in rows
-    assert "qwen3-tts" in rows
+    assert {"qwen3-clone", "qwen3-ready", "qwen3-voice-design"}.issubset(rows)
     assert "faster-whisper" in rows
     assert rows["chatterbox-v3"]["runtime_id"] == "chatterbox"
     assert rows["chatterbox-v3"]["model_ids"] == ["multilingual-v3"]
+    assert rows["qwen3-clone"]["runtime_id"] == "qwen3-tts"
+    assert rows["qwen3-clone"]["model_ids"] == ["qwen3-0.6b-base"]
 
 
 def test_rpc_capability_discovery_distinguishes_supported_from_catalogued(tmp_path):
@@ -47,7 +49,7 @@ def test_rpc_capability_discovery_distinguishes_supported_from_catalogued(tmp_pa
     response = server.handle({"jsonrpc": "2.0", "id": 4, "method": "capabilities.list", "params": {}})
     assert response is not None
     design = next(row for row in response["result"] if row["id"] == "speech.voice.design.v1")
-    assert "qwen3-tts" in design["engines"]
+    assert "qwen3-voice-design" in design["engines"]
     assert design["supported_engines"] == []
 
 

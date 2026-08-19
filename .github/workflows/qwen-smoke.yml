@@ -1,0 +1,66 @@
+name: qwen-real-smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "studio/engine_assets.py"
+      - "studio/engine_registry.py"
+      - "studio/engine_manager.py"
+      - "studio/runtime_manager.py"
+      - "studio/model_manager.py"
+      - "studio/ready_voices.py"
+      - "studio/qwen_adapter.py"
+      - "studio/qwen_worker.py"
+      - "studio/synthesis.py"
+      - "studio/protocol.py"
+      - "scripts/smoke_qwen.py"
+      - ".github/workflows/qwen-smoke.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "studio/engine_assets.py"
+      - "studio/engine_registry.py"
+      - "studio/engine_manager.py"
+      - "studio/runtime_manager.py"
+      - "studio/model_manager.py"
+      - "studio/ready_voices.py"
+      - "studio/qwen_adapter.py"
+      - "studio/qwen_worker.py"
+      - "studio/synthesis.py"
+      - "studio/protocol.py"
+      - "scripts/smoke_qwen.py"
+      - ".github/workflows/qwen-smoke.yml"
+
+concurrency:
+  group: qwen-real-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qwen-ready-cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      HF_HOME: /tmp/huggingface-qwen
+      VOICE_STUDIO_UV: ""
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install lightweight host management dependencies
+        run: python -m pip install --no-cache-dir -r requirements-dev.txt "huggingface-hub>=0.34,<2"
+      - name: Run isolated Qwen3-TTS Speech Core smoke
+        run: PYTHONPATH=. python scripts/smoke_qwen.py --output-dir smoke-output/qwen
+      - name: Upload Qwen smoke output
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-qwen
+          path: |
+            smoke-output/qwen/qwen-smoke.wav
+            smoke-output/qwen/qwen-smoke.json
+          if-no-files-found: ignore
+          retention-days: 3

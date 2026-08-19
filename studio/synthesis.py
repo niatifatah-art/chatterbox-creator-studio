@@ -21,6 +21,7 @@ from studio.protocol import (
     SpeechSynthesisRequest,
     VoiceSourceKind,
 )
+from studio.qwen_adapter import QwenExecutionAdapter
 from studio.runtime_manager import RuntimeManager
 from studio.speech_router import RouteError, RouteRequest, route
 from studio.voice_profile_store import StoredVoiceProfile, VoiceProfileStore
@@ -89,13 +90,17 @@ class KokoroAdapterProtocol(Protocol):
     def synthesize(self, **kwargs: Any) -> GenerationResultProtocol: ...
 
 
+class QwenAdapterProtocol(Protocol):
+    def synthesize(self, **kwargs: Any) -> GenerationResultProtocol: ...
+
+
 EngineFactory = Callable[[Path], EngineProtocol]
 ProgressCallback = Callable[[str, int | None, int | None], None]
 ExecutionResultCallback = Callable[[GenerationResultProtocol], None]
 
 # Executable families are an internal implementation registry, never a public protocol.
 # Adding a model/checkpoint behind an existing family does not change external clients.
-CURRENT_EXECUTION_FAMILIES = frozenset({"chatterbox", "kokoro"})
+CURRENT_EXECUTION_FAMILIES = frozenset({"chatterbox", "kokoro", "qwen3-tts"})
 
 
 def _default_engine_factory(output_dir: Path) -> EngineProtocol:
@@ -172,6 +177,7 @@ class SpeechSynthesisService:
         release_engine_after_request: bool = True,
         runtime_manager: RuntimeManager | None = None,
         kokoro_adapter: KokoroAdapterProtocol | None = None,
+        qwen_adapter: QwenAdapterProtocol | None = None,
     ):
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -182,6 +188,7 @@ class SpeechSynthesisService:
         self.release_engine_after_request = bool(release_engine_after_request)
         self.runtime_manager = runtime_manager or RuntimeManager(self.data_dir.parent / "runtimes")
         self.kokoro_adapter = kokoro_adapter or KokoroExecutionAdapter(self.runtime_manager)
+        self.qwen_adapter = qwen_adapter or QwenExecutionAdapter(self.runtime_manager)
         self.work_dir = self.data_dir / "generation-work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -375,6 +382,99 @@ class SpeechSynthesisService:
             progress_callback=engine_progress,
         )
 
+    def _execute_qwen(
+        self,
+        *,
+        text: str,
+        profile: StoredVoiceProfile,
+        manifest: EngineManifest,
+        binding,
+        model_id: str,
+        model_status: LocalModelStatus,
+        language: str,
+        settings: SynthesisExecutionSettings,
+        invocation_dir: Path,
+        progress_callback: ProgressCallback | None,
+    ) -> GenerationResultProtocol:
+        source = profile.profile.source
+        if not model_status.snapshot_path:
+            raise SynthesisError(SpeechErrorKind.MODEL_NOT_INSTALLED, "Qwen3-TTS model snapshot is missing.")
+
+        voice_id: str | None = None
+        reference_audio: Path | None = None
+        reference_text: str | None = None
+        instruct: str | None = None
+
+        if source.kind == VoiceSourceKind.READY:
+            if manifest.engine_id != "qwen3-ready":
+                raise SynthesisError(
+                    SpeechErrorKind.UNSUPPORTED_VOICE_SOURCE,
+                    "This Qwen route is not a ready-voice route.",
+                    data={"engine_id": manifest.engine_id},
+                )
+            voice_id = (binding.engine_voice_id if binding and binding.engine_voice_id else source.voice_id) or None
+            if not voice_id:
+                raise SynthesisError(
+                    SpeechErrorKind.INVALID_ARGUMENT,
+                    "This Qwen ready voice does not identify an upstream speaker.",
+                    data={"engine_id": manifest.engine_id},
+                )
+        elif source.kind == VoiceSourceKind.DESIGNED:
+            if manifest.engine_id != "qwen3-voice-design":
+                raise SynthesisError(
+                    SpeechErrorKind.UNSUPPORTED_VOICE_SOURCE,
+                    "This Qwen route does not support free-form voice design.",
+                    data={"engine_id": manifest.engine_id},
+                )
+            instruct = (source.description or "").strip() or None
+            if not instruct:
+                raise SynthesisError(
+                    SpeechErrorKind.INVALID_ARGUMENT,
+                    "Designed voices require a voice description.",
+                    data={"engine_id": manifest.engine_id},
+                )
+        elif source.kind in {VoiceSourceKind.CLONE, VoiceSourceKind.SAVED}:
+            if manifest.engine_id != "qwen3-clone":
+                raise SynthesisError(
+                    SpeechErrorKind.UNSUPPORTED_VOICE_SOURCE,
+                    "This Qwen route is not a clone route.",
+                    data={"engine_id": manifest.engine_id},
+                )
+            reference_audio = self._resolve_reference(profile)
+            metadata_sources = []
+            if binding is not None:
+                metadata_sources.append(binding.metadata)
+            metadata_sources.append(profile.profile.metadata)
+            for metadata in metadata_sources:
+                candidate = metadata.get("reference_text") if isinstance(metadata, dict) else None
+                if isinstance(candidate, str) and candidate.strip():
+                    reference_text = candidate.strip()
+                    break
+        else:
+            raise SynthesisError(
+                SpeechErrorKind.UNSUPPORTED_VOICE_SOURCE,
+                f"Voice source '{source.kind.value}' is not executable by Qwen3-TTS.",
+                data={"engine_id": manifest.engine_id},
+            )
+
+        def engine_progress(message: str, current: int | None, total: int | None) -> None:
+            _notify(progress_callback, message or "generating", current, total)
+
+        _notify(progress_callback, "generating", 0, None)
+        return self.qwen_adapter.synthesize(
+            text=text,
+            model_snapshot=model_status.snapshot_path,
+            model_id=model_id,
+            language=language,
+            output_dir=invocation_dir,
+            device=settings.device,
+            voice_id=voice_id,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            instruct=instruct,
+            progress_callback=engine_progress,
+        )
+
     def _execute_family(
         self,
         *,
@@ -393,6 +493,7 @@ class SpeechSynthesisService:
         handlers = {
             "chatterbox": self._execute_chatterbox,
             "kokoro": self._execute_kokoro,
+            "qwen3-tts": self._execute_qwen,
         }
         handler = handlers.get(family)
         if handler is None:
@@ -411,7 +512,7 @@ class SpeechSynthesisService:
             invocation_dir=invocation_dir,
             progress_callback=progress_callback,
         )
-        if family == "kokoro":
+        if family in {"kokoro", "qwen3-tts"}:
             return handler(manifest=manifest, binding=binding, **common)
         return handler(**common)
 

@@ -57,11 +57,35 @@ def test_kokoro_has_audited_deterministic_english_runtime_and_model_but_is_not_a
     assert asset.weights_license == "Apache-2.0"
 
 
-def test_qwen_remains_catalogued_without_guessed_runtime_or_model_assets():
-    engine = ENGINE_MANIFESTS["qwen3-tts"]
-    assert engine.status == EngineStatus.CATALOGUED
-    assert engine.model_ids == ()
-    runtime = RUNTIME_MANIFESTS[engine.runtime_id]
+def test_qwen_routes_have_one_reason_each_and_share_one_audited_runtime():
+    expected = {
+        "qwen3-clone": ("qwen3-0.6b-base", "voice_clone"),
+        "qwen3-ready": ("qwen3-0.6b-custom", "ready_voice"),
+        "qwen3-voice-design": ("qwen3-1.7b-voice-design", "voice_design"),
+    }
+    runtime = RUNTIME_MANIFESTS["qwen3-tts"]
     assert runtime.install_mode == RuntimeInstallMode.ISOLATED
-    assert runtime.requirements == ()
-    assert runtime.no_deps_requirements == ()
+    assert runtime.no_deps_requirements == ("qwen-tts==0.1.1",)
+    assert "transformers==4.57.3" in runtime.requirements
+    assert "accelerate==1.12.0" in runtime.requirements
+    assert any(requirement == "torch==2.13.0" for requirement in runtime.bootstrap_requirements)
+    assert any(requirement == "torchaudio==2.11.0" for requirement in runtime.bootstrap_requirements)
+    assert runtime.bootstrap_index_url and "pytorch.org/whl/cpu" in runtime.bootstrap_index_url
+    assert not any(requirement.startswith("gradio") for requirement in runtime.requirements)
+
+    for engine_id, (model_id, role) in expected.items():
+        engine = ENGINE_MANIFESTS[engine_id]
+        assert engine.status == EngineStatus.CATALOGUED
+        assert engine.runtime_id == "qwen3-tts"
+        assert engine.model_ids == (model_id,)
+        asset = MODEL_ASSET_MANIFESTS[model_id]
+        assert asset.repo_id.startswith("Qwen/Qwen3-TTS-12Hz-")
+        assert asset.weights_license == "Apache-2.0"
+        assert asset.metadata["role"] == role
+        assert "speech_tokenizer/model.safetensors" in asset.expected_files
+
+
+def test_qwen_does_not_add_redundant_1_7b_clone_or_custom_models_before_benchmarking():
+    repo_ids = {asset.repo_id for asset in MODEL_ASSET_MANIFESTS.values()}
+    assert "Qwen/Qwen3-TTS-12Hz-1.7B-Base" not in repo_ids
+    assert "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" not in repo_ids

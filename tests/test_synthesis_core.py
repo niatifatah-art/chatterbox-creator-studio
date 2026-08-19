@@ -289,7 +289,7 @@ def test_unbound_ready_voice_fails_closed_instead_of_guessing_an_engine(tmp_path
     assert exc.value.kind == SpeechErrorKind.ENGINE_UNAVAILABLE
 
 
-def test_catalogued_future_engine_cannot_execute_through_chatterbox_factory(tmp_path: Path):
+def test_catalogued_qwen_route_never_falls_through_to_chatterbox_factory(tmp_path: Path):
     service, _profiles, _artifacts, _manager, engines = _service(tmp_path)
     with pytest.raises(SynthesisError) as exc:
         service.synthesize(
@@ -297,11 +297,12 @@ def test_catalogued_future_engine_cannot_execute_through_chatterbox_factory(tmp_
                 text="Hello",
                 voice_profile_id="creator-voice",
                 language="en",
-                engine_override="qwen3-tts",
+                engine_override="qwen3-clone",
             )
         )
-    assert exc.value.kind == SpeechErrorKind.ENGINE_UNAVAILABLE
-    assert exc.value.data["engine_id"] == "qwen3-tts"
+    assert exc.value.kind == SpeechErrorKind.MODEL_NOT_INSTALLED
+    assert exc.value.data["engine_id"] == "qwen3-clone"
+    assert exc.value.data["model_id"] == "qwen3-0.6b-base"
     assert engines == []
 
 

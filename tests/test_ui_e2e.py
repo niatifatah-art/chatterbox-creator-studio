@@ -11,6 +11,7 @@ from playwright.sync_api import expect, sync_playwright  # noqa: E402
 
 BASE_URL = os.environ.get("CREATOR_STUDIO_BASE_URL", "http://127.0.0.1:7860")
 ARTIFACT_DIR = Path(os.environ.get("UI_ARTIFACT_DIR", "ui-artifacts"))
+BROWSER_CHANNEL = (os.environ.get("CREATOR_STUDIO_BROWSER_CHANNEL") or "").strip() or None
 
 
 def _button(page, selector: str):
@@ -46,7 +47,8 @@ def _check_choice(group, accessible_name: str):
 
 def test_primary_shell_is_explicit_adaptive_and_calm():
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        launch_options = {"channel": BROWSER_CHANNEL} if BROWSER_CHANNEL else {}
+        browser = playwright.chromium.launch(**launch_options)
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         page.goto(BASE_URL, wait_until="domcontentloaded")
         expect(page.locator("#product-nav")).to_be_visible(timeout=20_000)

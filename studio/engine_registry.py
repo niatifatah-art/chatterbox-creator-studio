@@ -40,6 +40,9 @@ class EngineManifest:
         return self.status == EngineStatus.SUPPORTED
 
 
+QWEN_LANGUAGES = ("zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it")
+
+
 ENGINE_MANIFESTS: dict[str, EngineManifest] = {
     "chatterbox-v3": EngineManifest(
         engine_id="chatterbox-v3",
@@ -83,24 +86,56 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         model_ids=("nano",),
         notes="CPU-friendly English cloning and expression tags.",
     ),
-    "qwen3-tts": EngineManifest(
-        engine_id="qwen3-tts",
-        display_name="Smart Voice",
+    "qwen3-clone": EngineManifest(
+        engine_id="qwen3-clone",
+        display_name="Smart Clone",
         family="qwen3-tts",
-        capabilities=frozenset({
-            Capability.SYNTHESIZE,
-            Capability.VOICE_CLONE,
-            Capability.VOICE_DESIGN,
-            Capability.READY_VOICE,
-        }),
-        languages=("zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"),
+        capabilities=frozenset({Capability.SYNTHESIZE, Capability.VOICE_CLONE}),
+        languages=QWEN_LANGUAGES,
+        resource_tier="medium",
+        code_license="Apache-2.0",
+        weights_license="Apache-2.0",
+        runtime_id="qwen3-tts",
+        model_ids=("qwen3-0.6b-base",),
+        status=EngineStatus.CATALOGUED,
+        notes=(
+            "Qwen3-TTS 0.6B Base multilingual cloning. Kept outside Auto until "
+            "runtime, real-model quality and speaker-similarity gates pass."
+        ),
+    ),
+    "qwen3-ready": EngineManifest(
+        engine_id="qwen3-ready",
+        display_name="Smart Ready",
+        family="qwen3-tts",
+        capabilities=frozenset({Capability.SYNTHESIZE, Capability.READY_VOICE}),
+        languages=QWEN_LANGUAGES,
+        resource_tier="medium",
+        code_license="Apache-2.0",
+        weights_license="Apache-2.0",
+        runtime_id="qwen3-tts",
+        model_ids=("qwen3-0.6b-custom",),
+        status=EngineStatus.CATALOGUED,
+        notes=(
+            "Qwen3-TTS 0.6B CustomVoice with nine upstream preset speakers. "
+            "Provider identity stays bound to the Voice Profile."
+        ),
+    ),
+    "qwen3-voice-design": EngineManifest(
+        engine_id="qwen3-voice-design",
+        display_name="Voice Design",
+        family="qwen3-tts",
+        capabilities=frozenset({Capability.SYNTHESIZE, Capability.VOICE_DESIGN}),
+        languages=QWEN_LANGUAGES,
         resource_tier="heavy",
         code_license="Apache-2.0",
         weights_license="Apache-2.0",
         runtime_id="qwen3-tts",
-        model_ids=(),
+        model_ids=("qwen3-1.7b-voice-design",),
         status=EngineStatus.CATALOGUED,
-        notes="Voice design, ready voices and cloning; runtime isolation required before shipping.",
+        notes=(
+            "Qwen3-TTS 1.7B free-form voice design. Direct design synthesis is "
+            "allowed manually; durable character voices should later be frozen into a clone binding."
+        ),
     ),
     "kokoro": EngineManifest(
         engine_id="kokoro",
@@ -114,7 +149,7 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         runtime_id="kokoro",
         model_ids=("kokoro-v1.0",),
         status=EngineStatus.CATALOGUED,
-        notes="82M ready-voice route. English execution is implemented; Auto remains disabled until the Phase 5 real-model gate passes.",
+        notes="82M ready-voice route. English execution is implemented; Auto remains disabled until certification is promoted.",
     ),
     "faster-whisper": EngineManifest(
         engine_id="faster-whisper",
@@ -204,12 +239,7 @@ def engines_for(capability: Capability, *, include_catalogued: bool = False) -> 
 
 
 def validate_engine_registry() -> None:
-    """Validate executable/configured routes while allowing research-only catalogue rows.
-
-    A catalogue row may intentionally name a future runtime before that runtime is
-    audited. Once model assets are attached—or the route is promoted to supported—the
-    runtime/model links become mandatory and fail fast at import time.
-    """
+    """Validate executable/configured routes while allowing research-only catalogue rows."""
 
     for engine_id, manifest in ENGINE_MANIFESTS.items():
         if manifest.engine_id != engine_id:

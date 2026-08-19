@@ -93,6 +93,10 @@ class EngineManager:
                 for model in models
             )
         )
+        if ready and manifest.status != EngineStatus.SUPPORTED:
+            reasons.append(
+                "Engine is installed and runnable but remains catalogued until certification promotes it to Auto."
+            )
         auto_eligible = bool(ready and manifest.status == EngineStatus.SUPPORTED)
         return EngineReadiness(
             engine_id=manifest.engine_id,

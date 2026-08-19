@@ -8,7 +8,7 @@ on:
       - "assets/**"
       - "studio/**"
       - "scripts/start_windows.bat"
-      - "requirements.txt"
+      - "requirements*.txt"
       - ".github/workflows/windows-ui-smoke.yml"
   push:
     branches:
@@ -19,25 +19,25 @@ on:
       - "assets/**"
       - "studio/**"
       - "scripts/start_windows.bat"
-      - "requirements.txt"
+      - "requirements*.txt"
       - ".github/workflows/windows-ui-smoke.yml"
 
 jobs:
   product-shell:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: Install application
-        run: python -m pip install --no-cache-dir -r requirements.txt
-      - name: Import product application
+      - name: Install product shell
+        run: python -m pip install --no-cache-dir -r requirements-ui.txt
+      - name: Import product application without speech runtimes
         shell: pwsh
         run: |
           $trace = Join-Path $env:RUNNER_TEMP "creator-studio-import.txt"
-          python -c "import product_app; print('Windows product app import ok')" 2>&1 | Tee-Object -FilePath $trace
+          python -c "import sys, product_app; heavy=('torch','torchaudio','chatterbox','qwen_tts','faster_whisper'); leaked=[name for name in heavy if name in sys.modules]; assert not leaked, f'Product shell imported heavy speech modules: {leaked}'; print('Windows product app import ok without speech runtimes')" 2>&1 | Tee-Object -FilePath $trace
           if ($LASTEXITCODE -ne 0) {
             $message = ((Get-Content $trace -Raw) -replace '%','%25' -replace "`r?`n",'%0A')
             Write-Host "::error title=Product application import failed::$message"
