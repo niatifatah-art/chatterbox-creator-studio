@@ -84,18 +84,28 @@ def test_untrusted_or_broken_model_never_becomes_auto_eligible(tmp_path: Path):
         assert status.reasons
 
 
-def test_catalogued_engine_without_selected_model_asset_is_not_ready(tmp_path: Path):
-    """A research-only route must remain non-runnable until its asset phase begins."""
+def test_catalogued_qwen_route_stays_out_of_auto_even_when_runtime_and_model_are_ready(tmp_path: Path):
+    runtimes = FakeRuntimeManager({"qwen3-tts"})
+    models = FakeModelManager({"qwen3-0.6b-base": _model("qwen3-0.6b-base")})
+    manager = EngineManager(tmp_path, runtime_manager=runtimes, model_manager=models)
 
-    manager = EngineManager(
-        tmp_path,
-        runtime_manager=FakeRuntimeManager(),
-        model_manager=FakeModelManager({}),
-    )
-
-    status = manager.status("qwen3-tts")
+    status = manager.status("qwen3-clone")
 
     assert status.catalogue_status == "catalogued"
+    assert status.ready is True
+    assert status.auto_eligible is False
+    assert any("catalog" in reason.lower() or "certif" in reason.lower() for reason in status.reasons)
+
+
+def test_qwen_route_reports_missing_model_without_installing_anything(tmp_path: Path):
+    runtimes = FakeRuntimeManager({"qwen3-tts"})
+    models = FakeModelManager({"qwen3-1.7b-voice-design": _model("qwen3-1.7b-voice-design", installed=False)})
+    manager = EngineManager(tmp_path, runtime_manager=runtimes, model_manager=models)
+
+    status = manager.status("qwen3-voice-design")
+
     assert status.ready is False
     assert status.auto_eligible is False
-    assert any("model asset" in reason.lower() for reason in status.reasons)
+    assert status.reasons
+    assert runtimes.install_called is False
+    assert models.download_called is False
