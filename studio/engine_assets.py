@@ -83,8 +83,10 @@ RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
         # Install Kokoro itself without dependencies, then provide the exact English
         # execution surface deliberately. This avoids bringing the optional eSpeak/
         # phonemizer fallback into the lightweight runtime and prevents generation-time
-        # package/model downloads.
+        # package/model downloads. Kokoro's current custom STFT imports ``attr`` even
+        # though the package metadata does not declare attrs, so pin it explicitly too.
         requirements=(
+            "attrs==26.1.0",
             "huggingface-hub==1.28.0",
             "loguru==0.7.3",
             "misaki==0.9.4",
@@ -102,16 +104,17 @@ RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
         distribution_name="kokoro",
         notes=(
             "Audited English ready-voice runtime: CPU-only PyTorch, Kokoro 0.9.4, Misaki 0.9.4, "
-            "and the official spaCy English small pipeline. The optional eSpeak/phonemizer fallback is "
-            "intentionally omitted so this lightweight route remains deterministic and does not inherit "
-            "an external native-data dependency. OOV fallback is disabled; pronunciation hints/QA are the "
-            "future product-level recovery path."
+            "attrs for Kokoro's undeclared custom-STFT import, and the official spaCy English small pipeline. "
+            "The optional eSpeak/phonemizer fallback is intentionally omitted so this lightweight route remains "
+            "deterministic and does not inherit an external native-data dependency. OOV fallback is disabled; "
+            "pronunciation hints/QA are the future product-level recovery path."
         ),
         metadata={
             "upstream": "https://github.com/hexgrad/kokoro",
             "compute_tier": "cpu",
             "english_ood_fallback": "disabled",
             "spacy_pipeline": "en_core_web_sm-3.8.0",
+            "undeclared_dependency_pin": "attrs==26.1.0",
         },
     ),
     "qwen3-tts": RuntimeManifest(
