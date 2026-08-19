@@ -32,6 +32,12 @@ class RuntimeManifest:
     install_mode: RuntimeInstallMode = RuntimeInstallMode.ISOLATED
     python_spec: str = ">=3.10,<3.14"
     requirements: tuple[str, ...] = ()
+    # Optional bootstrap packages are installed before the main requirements. This is
+    # useful when a dependency family has a platform-specific official package index,
+    # such as a CPU-only PyTorch wheel. Keeping it in the manifest makes the runtime
+    # reproducible instead of relying on whichever GPU wheel PyPI happens to resolve.
+    bootstrap_requirements: tuple[str, ...] = ()
+    bootstrap_index_url: str | None = None
     source_revision: str | None = None
     code_license: str | None = None
     distribution_name: str | None = None
@@ -58,6 +64,8 @@ class ModelAssetManifest:
 
 CHATTERBOX_UPSTREAM_REVISION = "5de7a54aa4e5e2baadb0182dde554908b48b85c2"
 KOKORO_PACKAGE_VERSION = "0.9.4"
+KOKORO_CPU_TORCH_VERSION = "2.13.0"
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 
 RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
@@ -76,20 +84,24 @@ RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
     ),
     "kokoro": RuntimeManifest(
         runtime_id="kokoro",
-        display_name="Kokoro Runtime",
+        display_name="Kokoro CPU Runtime",
         install_mode=RuntimeInstallMode.ISOLATED,
         python_spec=">=3.10,<3.14",
         requirements=(f"kokoro=={KOKORO_PACKAGE_VERSION}",),
+        bootstrap_requirements=(f"torch=={KOKORO_CPU_TORCH_VERSION}",),
+        bootstrap_index_url=PYTORCH_CPU_INDEX,
         source_revision=KOKORO_PACKAGE_VERSION,
         code_license="Apache-2.0",
         distribution_name="kokoro",
         notes=(
-            "Official Kokoro 0.9.4 Python runtime. Phase 5 certifies English ready voices first; "
-            "espeak-ng remains an optional English OOD fallback and is required before later espeak-based language routes are certified."
+            "Official Kokoro 0.9.4 Python runtime with an explicitly CPU-only PyTorch bootstrap. "
+            "Kokoro is the lightweight ready-voice route, so installing gigabytes of CUDA libraries on a CPU machine would violate the product role. "
+            "English is certified first; later language/GPU routes require their own runtime audit."
         ),
         metadata={
             "upstream": "https://github.com/hexgrad/kokoro",
-            "english_ood_fallback": "espeak-ng",
+            "compute_tier": "cpu",
+            "english_ood_fallback": "espeak-ng-loader via misaki[en]",
         },
     ),
     "qwen3-tts": RuntimeManifest(
@@ -219,6 +231,8 @@ def validate_asset_registry() -> None:
             raise ValueError(
                 f"Host runtime '{runtime_id}' needs distribution_name for read-only readiness checks."
             )
+        if runtime.bootstrap_index_url and not runtime.bootstrap_requirements:
+            raise ValueError(f"Runtime '{runtime_id}' declares a bootstrap index without bootstrap packages.")
 
 
 validate_asset_registry()
