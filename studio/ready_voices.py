@@ -16,14 +16,12 @@ class ReadyVoiceManifest:
     display_name: str
     language: str
     locale: str
+    languages: tuple[str, ...] = ()
     quality_grade: str | None = None
     recommended: bool = False
     notes: str = ""
 
 
-# Kokoro v1.0 English voices from the official model repository. We keep the upstream
-# IDs unchanged because the voice pack filenames use them. Grades are upstream guidance,
-# not our own quality claim; the later certification phase adds measured Studio data.
 _KOKORO_US = (
     ("af_alloy", "Alloy", "C"),
     ("af_aoede", "Aoede", "C+"),
@@ -58,6 +56,22 @@ _KOKORO_GB = (
     ("bm_lewis", "Lewis", "D+"),
 )
 
+QWEN_LANGUAGES = ("zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it")
+
+# Official CustomVoice speaker set. Native language is presentation metadata only:
+# upstream documents that each speaker can speak every language supported by the model.
+_QWEN_READY = (
+    ("Vivian", "Vivian", "zh", "zh-CN", "Bright, slightly edgy young female voice."),
+    ("Serena", "Serena", "zh", "zh-CN", "Warm, gentle young female voice."),
+    ("Uncle_Fu", "Uncle Fu", "zh", "zh-CN", "Seasoned male voice with a low, mellow timbre."),
+    ("Dylan", "Dylan", "zh", "zh-CN", "Youthful Beijing male voice with a clear, natural timbre."),
+    ("Eric", "Eric", "zh", "zh-CN", "Lively Chengdu male voice with a slightly husky brightness."),
+    ("Ryan", "Ryan", "en", "en-US", "Dynamic male voice with strong rhythmic drive."),
+    ("Aiden", "Aiden", "en", "en-US", "Sunny American male voice with a clear midrange."),
+    ("Ono_Anna", "Ono Anna", "ja", "ja-JP", "Playful Japanese female voice with a light, nimble timbre."),
+    ("Sohee", "Sohee", "ko", "ko-KR", "Warm Korean female voice with rich emotion."),
+)
+
 
 READY_VOICES: tuple[ReadyVoiceManifest, ...] = tuple(
     ReadyVoiceManifest(
@@ -83,6 +97,18 @@ READY_VOICES: tuple[ReadyVoiceManifest, ...] = tuple(
         notes="Upstream Kokoro v1.0 ready voice.",
     )
     for voice_id, display_name, grade in _KOKORO_GB
+) + tuple(
+    ReadyVoiceManifest(
+        engine_id="qwen3-ready",
+        voice_id=voice_id,
+        display_name=display_name,
+        language=native_language,
+        locale=locale,
+        languages=QWEN_LANGUAGES,
+        recommended=voice_id in {"Ryan", "Aiden"},
+        notes=f"Official Qwen3-TTS CustomVoice preset. Native voice: {description}",
+    )
+    for voice_id, display_name, native_language, locale, description in _QWEN_READY
 )
 
 
@@ -96,7 +122,11 @@ def list_ready_voices(
         voice
         for voice in READY_VOICES
         if (engine_id is None or voice.engine_id == engine_id)
-        and (not language_code or voice.language == language_code)
+        and (
+            not language_code
+            or language_code == voice.language
+            or language_code in voice.languages
+        )
     ]
     return tuple(sorted(rows, key=lambda item: (not item.recommended, item.locale, item.display_name.lower())))
 
@@ -128,15 +158,17 @@ def create_ready_voice_profile(
     """
 
     ready = get_ready_voice(engine_id, voice_id)
+    supported_languages = ready.languages or (ready.language,)
     store.create(
         profile_id,
         display_name or ready.display_name,
         source_kind=VoiceSourceKind.READY,
         source_voice_id=ready.voice_id,
-        supported_languages=(ready.language,),
+        supported_languages=supported_languages,
         metadata={
             "ready_voice_engine": ready.engine_id,
             "ready_voice_locale": ready.locale,
+            "ready_voice_native_language": ready.language,
             **dict(metadata or {}),
         },
     )
@@ -147,7 +179,7 @@ def create_ready_voice_profile(
             model_id=model_id,
             model_revision=model_revision,
             engine_voice_id=ready.voice_id,
-            certified_languages=(ready.language,),
+            certified_languages=supported_languages,
         ),
         promote_revision=True,
     )
