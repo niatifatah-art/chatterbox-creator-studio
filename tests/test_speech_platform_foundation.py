@@ -60,9 +60,10 @@ def test_voice_profile_is_engine_independent_and_versioned():
 
 
 def test_registry_exposes_capabilities_runtime_and_model_assets():
-    qwen = manifest_for("qwen3-tts")
-    assert qwen.supports(Capability.SYNTHESIZE, Capability.VOICE_DESIGN)
-    assert qwen.status == EngineStatus.CATALOGUED
+    design = manifest_for("qwen3-voice-design")
+    assert design.supports(Capability.SYNTHESIZE, Capability.VOICE_DESIGN)
+    assert design.status == EngineStatus.CATALOGUED
+    assert design.model_ids == ("qwen3-1.7b-voice-design",)
     chatterbox = manifest_for("chatterbox-v3")
     assert chatterbox.supports(Capability.VOICE_CLONE)
     assert chatterbox.runtime_id == "chatterbox"
@@ -118,7 +119,7 @@ def test_consistency_lock_beats_new_catalogued_quality_candidate():
             needs_voice_clone=True,
             priority=Priority.CONSISTENCY,
             consistency_engine="chatterbox-v3",
-            installed_engines=frozenset({"chatterbox-v3", "qwen3-tts"}),
+            installed_engines=frozenset({"chatterbox-v3", "qwen3-clone"}),
         )
     )
     assert decision.engine_id == "chatterbox-v3"
@@ -132,7 +133,7 @@ def test_best_quality_does_not_promote_uncertified_engine_over_supported_route()
             language="en",
             needs_voice_clone=True,
             priority=Priority.BEST,
-            installed_engines=frozenset({"chatterbox-v3", "qwen3-tts"}),
+            installed_engines=frozenset({"chatterbox-v3", "qwen3-clone"}),
         )
     )
     assert decision.engine_id == "chatterbox-v3"
@@ -148,8 +149,23 @@ def test_voice_design_can_select_catalogued_engine_but_marks_install_needed():
             priority=Priority.BEST,
         )
     )
-    assert decision.engine_id == "qwen3-tts"
+    assert decision.engine_id == "qwen3-voice-design"
     assert decision.requires_install
+
+
+def test_manual_qwen_clone_override_is_possible_without_promoting_it_to_auto():
+    decision = route(
+        RouteRequest(
+            capability=Capability.SYNTHESIZE,
+            language="en",
+            needs_voice_clone=True,
+            engine_override="qwen3-clone",
+            installed_engines=frozenset({"qwen3-clone"}),
+        )
+    )
+    assert decision.engine_id == "qwen3-clone"
+    assert not decision.requires_install
+    assert manifest_for("qwen3-clone").status == EngineStatus.CATALOGUED
 
 
 def test_manual_override_rejects_unsupported_language():
