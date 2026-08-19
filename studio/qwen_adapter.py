@@ -67,6 +67,17 @@ class QwenExecutionAdapter:
                 "Required Qwen3-TTS model assets are missing: " + ", ".join(missing)
             )
 
+    @staticmethod
+    def _stop_process(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+
     def synthesize(
         self,
         *,
@@ -166,20 +177,25 @@ class QwenExecutionAdapter:
             env=env,
         )
         started = time.monotonic()
-        while process.poll() is None:
+        stdout = ""
+        stderr = ""
+        while True:
             if generation_cancel_requested():
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+                self._stop_process(process)
                 raise GenerationCancelled("Generation stopped.")
-            if time.monotonic() - started > self.timeout_seconds:
-                process.kill()
+            elapsed = time.monotonic() - started
+            remaining = self.timeout_seconds - elapsed
+            if remaining <= 0:
+                self._stop_process(process)
                 raise TimeoutError("Qwen3-TTS generation exceeded the local timeout.")
-            time.sleep(0.1)
+            try:
+                # communicate() drains both pipes while waiting, preventing a verbose
+                # Transformers/Qwen child from blocking forever on a full OS pipe.
+                stdout, stderr = process.communicate(timeout=min(0.25, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
 
-        stdout, stderr = process.communicate()
         if process.returncode != 0:
             tail = (stderr or stdout or "Qwen3-TTS worker failed.").strip().splitlines()[-1:]
             reason = tail[0][:300] if tail else "Qwen3-TTS worker failed."
