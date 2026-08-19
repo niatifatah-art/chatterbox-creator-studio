@@ -25,6 +25,7 @@ blocked = (
     "torch",
     "torchaudio",
     "chatterbox",
+    "qwen_tts",
     "huggingface_hub",
     "librosa",
     "soundfile",
@@ -49,7 +50,8 @@ with tempfile.TemporaryDirectory() as raw:
     engines = EngineManager(root / "management")
     statuses = engines.statuses()
     assert statuses
-    assert all(not row.ready for row in statuses if row.engine_id in {"kokoro", "qwen3-tts"})
+    isolated_optional = {"kokoro", "qwen3-clone", "qwen3-ready", "qwen3-voice-design"}
+    assert all(not row.ready for row in statuses if row.engine_id in isolated_optional)
 
     speech = SpeechSynthesisService(root / "speech")
     assert speech.data_dir.is_dir()
