@@ -13,13 +13,7 @@ from studio.protocol import Capability, EngineStatus
 
 @dataclass(frozen=True, slots=True)
 class EngineManifest:
-    """Small, model-free description of one routable speech implementation.
-
-    ``runtime_id`` groups variants that can share an isolated runtime. ``model_ids``
-    identifies model assets without making those assets the public capability. This
-    keeps external clients capability-driven while allowing model/checkpoint replacement
-    behind the same engine contract.
-    """
+    """Small, model-free description of one routable speech implementation."""
 
     engine_id: str
     display_name: str
@@ -110,17 +104,20 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
     ),
     "kokoro": EngineManifest(
         engine_id="kokoro",
-        display_name="Ultra Light",
+        display_name="Kokoro Ready",
         family="kokoro",
         capabilities=frozenset({Capability.SYNTHESIZE, Capability.READY_VOICE}),
-        languages=("en", "ja", "zh", "es", "fr", "hi", "it", "pt"),
+        # Upstream ships additional languages, but several depend on extra G2P/system
+        # packages and upstream warns that non-English support may be thin. English is
+        # the first Phase 5 certified execution surface; other languages remain deferred.
+        languages=("en",),
         resource_tier="ultra_light",
         code_license="Apache-2.0",
         weights_license="Apache-2.0",
         runtime_id="kokoro",
-        model_ids=(),
+        model_ids=("kokoro-v1.0",),
         status=EngineStatus.CATALOGUED,
-        notes="Tiny preset-voice engine; ideal candidate for low-resource machines.",
+        notes="82M ready-voice route. English execution is implemented; Auto remains disabled until the Phase 5 real-model gate passes.",
     ),
     "faster-whisper": EngineManifest(
         engine_id="faster-whisper",
@@ -210,25 +207,22 @@ def engines_for(capability: Capability, *, include_catalogued: bool = False) -> 
 
 
 def validate_engine_registry() -> None:
-    """Fail fast when a supported route cannot be executed from declared assets.
-
-    Catalogued routes are allowed to be incomplete by design: they are research entries,
-    not product-support promises. Supported routes must point to a known runtime and all
-    declared model assets must resolve through that same runtime.
-    """
-
     for engine_id, manifest in ENGINE_MANIFESTS.items():
         if manifest.engine_id != engine_id:
             raise ValueError(
                 f"Engine manifest key '{engine_id}' disagrees with engine_id '{manifest.engine_id}'."
             )
-        if manifest.status == EngineStatus.SUPPORTED:
+        # Every route with configured model assets must resolve them even while it is
+        # still catalogued. This catches Phase 5/6 wiring mistakes before Auto promotion.
+        if manifest.runtime_id:
             runtime_for_engine(engine_id)
-            for asset in model_assets_for_engine(engine_id):
-                if asset.runtime_id != manifest.runtime_id:
-                    raise ValueError(
-                        f"Supported engine '{engine_id}' has an incompatible model asset runtime."
-                    )
+        for asset in model_assets_for_engine(engine_id):
+            if asset.runtime_id != manifest.runtime_id:
+                raise ValueError(
+                    f"Engine '{engine_id}' has an incompatible model asset runtime."
+                )
+        if manifest.status == EngineStatus.SUPPORTED and not manifest.runtime_id:
+            raise ValueError(f"Supported engine '{engine_id}' has no runtime identity.")
 
 
 validate_engine_registry()
