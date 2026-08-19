@@ -34,9 +34,6 @@ class RuntimeManifest:
     requirements: tuple[str, ...] = ()
     source_revision: str | None = None
     code_license: str | None = None
-    # Distribution metadata is different from the import-package name. It is required
-    # only for host-legacy readiness checks; isolated runtimes are verified by their
-    # app-owned environment/fingerprint instead.
     distribution_name: str | None = None
     notes: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
@@ -59,9 +56,8 @@ class ModelAssetManifest:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
-# Keep the source revision used by the current product explicit and reusable. Runtime
-# installation moves behind RuntimeManager in stages; this constant is not a public API.
 CHATTERBOX_UPSTREAM_REVISION = "5de7a54aa4e5e2baadb0182dde554908b48b85c2"
+KOKORO_PACKAGE_VERSION = "0.9.4"
 
 
 RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
@@ -76,15 +72,25 @@ RUNTIME_MANIFESTS: dict[str, RuntimeManifest] = {
         source_revision=CHATTERBOX_UPSTREAM_REVISION,
         code_license="MIT",
         distribution_name="chatterbox-tts",
-        notes="Current shipped runtime. Phase 4 keeps host installation compatible while preparing isolated runtimes for new families.",
+        notes="Current shipped runtime. Kept host-compatible while new engine families use isolated runtimes.",
     ),
     "kokoro": RuntimeManifest(
         runtime_id="kokoro",
         display_name="Kokoro Runtime",
         install_mode=RuntimeInstallMode.ISOLATED,
         python_spec=">=3.10,<3.14",
-        requirements=(),
-        notes="Catalogued only. Exact runtime requirements are selected and audited in the Kokoro phase.",
+        requirements=(f"kokoro=={KOKORO_PACKAGE_VERSION}",),
+        source_revision=KOKORO_PACKAGE_VERSION,
+        code_license="Apache-2.0",
+        distribution_name="kokoro",
+        notes=(
+            "Official Kokoro 0.9.4 Python runtime. Phase 5 certifies English ready voices first; "
+            "espeak-ng remains an optional English OOD fallback and is required before later espeak-based language routes are certified."
+        ),
+        metadata={
+            "upstream": "https://github.com/hexgrad/kokoro",
+            "english_ood_fallback": "espeak-ng",
+        },
     ),
     "qwen3-tts": RuntimeManifest(
         runtime_id="qwen3-tts",
@@ -159,6 +165,25 @@ MODEL_ASSET_MANIFESTS: dict[str, ModelAssetManifest] = {
         allow_patterns=("*.safetensors", "*.json", "*.txt", "*.pt", "*.model", "*.yaml"),
         weights_license="MIT",
         notes="Chatterbox Nano managed model asset.",
+    ),
+    "kokoro-v1.0": ModelAssetManifest(
+        model_id="kokoro-v1.0",
+        runtime_id="kokoro",
+        provider=ModelProvider.HUGGINGFACE,
+        repo_id="hexgrad/Kokoro-82M",
+        revision_ref="main",
+        allow_patterns=("config.json", "kokoro-v1_0.pth", "voices/*.pt", "VOICES.md", "README.md"),
+        expected_files=("config.json", "kokoro-v1_0.pth"),
+        weights_license="Apache-2.0",
+        estimated_size_gb=0.36,
+        notes=(
+            "Official Kokoro v1.0 model plus ready-voice packs. Download selection resolves and stores the immutable Hub snapshot revision."
+        ),
+        metadata={
+            "serialization": "torch-pth-weights-only",
+            "ready_voice_directory": "voices",
+            "sample_rate": "24000",
+        },
     ),
 }
 
