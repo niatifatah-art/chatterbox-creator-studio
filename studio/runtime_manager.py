@@ -61,6 +61,7 @@ def _runtime_fingerprint(manifest: RuntimeManifest) -> str:
             "install_mode": manifest.install_mode.value,
             "python_spec": manifest.python_spec,
             "requirements": list(manifest.requirements),
+            "distribution_name": manifest.distribution_name,
             "source_revision": manifest.source_revision,
         },
         ensure_ascii=False,
@@ -132,6 +133,8 @@ class RuntimeManager:
 
     @staticmethod
     def _host_distribution_installed(manifest: RuntimeManifest) -> bool:
+        """Check the declared distribution metadata without importing the ML package."""
+
         if not manifest.distribution_name:
             return False
         try:
@@ -156,7 +159,7 @@ class RuntimeManager:
             installed = self._host_distribution_installed(manifest)
             return RuntimeStatus(
                 runtime_id=runtime_id,
-                configured=bool(manifest.requirements),
+                configured=bool(manifest.requirements and manifest.distribution_name),
                 installed=installed,
                 ready=installed,
                 install_mode=manifest.install_mode.value,
