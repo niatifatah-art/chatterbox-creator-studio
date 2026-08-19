@@ -8,8 +8,8 @@ from pathlib import Path
 
 from studio.artifact_store import ArtifactStore
 from studio.model_manager import LocalModelStatus
-from studio.protocol import SpeechSynthesisRequest, VoiceSourceKind
-from studio.ready_voices import get_ready_voice, list_ready_voices
+from studio.protocol import SpeechSynthesisRequest
+from studio.ready_voices import create_ready_voice_profile, get_ready_voice, list_ready_voices
 from studio.synthesis import SpeechSynthesisService
 from studio.voice_profile_store import VoiceProfileStore
 
@@ -75,16 +75,36 @@ def test_ready_voice_catalogue_is_generic_and_curated():
     assert get_ready_voice("kokoro", "bf_emma").locale == "en-GB"
 
 
-def test_ready_voice_routes_through_kokoro_without_clone_reference(tmp_path: Path):
+def test_ready_voice_profile_persists_the_provider_identity_in_a_generic_binding(tmp_path: Path):
+    store = VoiceProfileStore(tmp_path / "profiles")
+    record = create_ready_voice_profile(
+        store,
+        "heart",
+        engine_id="kokoro",
+        voice_id="af_heart",
+        model_id="kokoro-v1.0",
+        model_revision="kokoro-test-revision",
+    )
+    assert record.profile.source.voice_id == "af_heart"
+    assert record.profile.preferred_engine_id == "kokoro"
+    binding = record.binding_for("kokoro")
+    assert binding is not None
+    assert binding.engine_voice_id == "af_heart"
+    assert binding.model_id == "kokoro-v1.0"
+    assert binding.model_revision == "kokoro-test-revision"
+
+
+def test_ready_voice_routes_through_kokoro_without_clone_reference_or_caller_override(tmp_path: Path):
     data = tmp_path / "data" / "speech-core"
     profiles = VoiceProfileStore(data / "voice-profiles")
     artifacts = ArtifactStore(data / "artifacts")
-    profiles.create(
+    create_ready_voice_profile(
+        profiles,
         "heart",
-        "Heart",
-        source_kind=VoiceSourceKind.READY,
-        source_voice_id="af_heart",
-        supported_languages=("en",),
+        engine_id="kokoro",
+        voice_id="af_heart",
+        model_id="kokoro-v1.0",
+        model_revision="kokoro-test-revision",
     )
     snapshot = tmp_path / "models" / "kokoro"
     snapshot.mkdir(parents=True)
@@ -103,7 +123,6 @@ def test_ready_voice_routes_through_kokoro_without_clone_reference(tmp_path: Pat
             text="This is a ready voice from the reusable Speech Core.",
             voice_profile_id="heart",
             language="en",
-            engine_override="kokoro",
         )
     )
 
