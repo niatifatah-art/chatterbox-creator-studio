@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from studio.engine_assets import (
+    MODEL_ASSET_MANIFESTS,
+    RUNTIME_MANIFESTS,
+    ModelAssetManifest,
+    RuntimeManifest,
+)
 from studio.protocol import Capability, EngineStatus
 
 
@@ -9,9 +15,10 @@ from studio.protocol import Capability, EngineStatus
 class EngineManifest:
     """Small, model-free description of one routable speech implementation.
 
-    `runtime_id` groups variants that can share an isolated runtime. `model_ids`
+    ``runtime_id`` groups variants that can share an isolated runtime. ``model_ids``
     identifies model assets without making those assets the public capability. This
-    lets model/checkpoint replacements happen behind the same engine contract.
+    keeps external clients capability-driven while allowing model/checkpoint replacement
+    behind the same engine contract.
     """
 
     engine_id: str
@@ -97,7 +104,7 @@ ENGINE_MANIFESTS: dict[str, EngineManifest] = {
         code_license="Apache-2.0",
         weights_license="Apache-2.0",
         runtime_id="qwen3-tts",
-        model_ids=(),  # exact shippable checkpoints are chosen during certification
+        model_ids=(),
         status=EngineStatus.CATALOGUED,
         notes="Voice design, ready voices and cloning; runtime isolation required before shipping.",
     ),
@@ -166,9 +173,62 @@ def manifest_for(engine_id: str) -> EngineManifest:
         raise ValueError(f"Unknown speech engine: {engine_id}") from exc
 
 
+def runtime_for_engine(engine_id: str) -> RuntimeManifest:
+    manifest = manifest_for(engine_id)
+    try:
+        return RUNTIME_MANIFESTS[manifest.runtime_id]
+    except KeyError as exc:
+        raise ValueError(
+            f"Engine '{engine_id}' references unknown runtime '{manifest.runtime_id}'."
+        ) from exc
+
+
+def model_assets_for_engine(engine_id: str) -> tuple[ModelAssetManifest, ...]:
+    manifest = manifest_for(engine_id)
+    assets: list[ModelAssetManifest] = []
+    for model_id in manifest.model_ids:
+        try:
+            asset = MODEL_ASSET_MANIFESTS[model_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"Engine '{engine_id}' references unknown model asset '{model_id}'."
+            ) from exc
+        if asset.runtime_id != manifest.runtime_id:
+            raise ValueError(
+                f"Engine '{engine_id}' and model '{model_id}' disagree on runtime identity."
+            )
+        assets.append(asset)
+    return tuple(assets)
+
+
 def engines_for(capability: Capability, *, include_catalogued: bool = False) -> tuple[EngineManifest, ...]:
     return tuple(
         manifest
         for manifest in ENGINE_MANIFESTS.values()
         if capability in manifest.capabilities and (include_catalogued or manifest.auto_routable)
     )
+
+
+def validate_engine_registry() -> None:
+    """Fail fast when a supported route cannot be executed from declared assets.
+
+    Catalogued routes are allowed to be incomplete by design: they are research entries,
+    not product-support promises. Supported routes must point to a known runtime and all
+    declared model assets must resolve through that same runtime.
+    """
+
+    for engine_id, manifest in ENGINE_MANIFESTS.items():
+        if manifest.engine_id != engine_id:
+            raise ValueError(
+                f"Engine manifest key '{engine_id}' disagrees with engine_id '{manifest.engine_id}'."
+            )
+        if manifest.status == EngineStatus.SUPPORTED:
+            runtime_for_engine(engine_id)
+            for asset in model_assets_for_engine(engine_id):
+                if asset.runtime_id != manifest.runtime_id:
+                    raise ValueError(
+                        f"Supported engine '{engine_id}' has an incompatible model asset runtime."
+                    )
+
+
+validate_engine_registry()
