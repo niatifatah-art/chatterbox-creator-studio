@@ -85,13 +85,15 @@ def test_untrusted_or_broken_model_never_becomes_auto_eligible(tmp_path: Path):
 
 
 def test_catalogued_engine_without_selected_model_asset_is_not_ready(tmp_path: Path):
+    """A research-only route must remain non-runnable until its asset phase begins."""
+
     manager = EngineManager(
         tmp_path,
         runtime_manager=FakeRuntimeManager(),
         model_manager=FakeModelManager({}),
     )
 
-    status = manager.status("kokoro")
+    status = manager.status("qwen3-tts")
 
     assert status.catalogue_status == "catalogued"
     assert status.ready is False

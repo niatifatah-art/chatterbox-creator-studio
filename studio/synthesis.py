@@ -10,6 +10,7 @@ from typing import Any, Callable, Protocol
 from studio.artifact_store import ArtifactStore
 from studio.cancellation import GenerationCancelled, raise_if_generation_cancelled
 from studio.engine_registry import ENGINE_MANIFESTS, EngineManifest
+from studio.kokoro_adapter import KokoroExecutionAdapter
 from studio.language import normalize_language_code
 from studio.model_manager import LocalModelManager, LocalModelStatus
 from studio.protocol import (
@@ -20,6 +21,7 @@ from studio.protocol import (
     SpeechSynthesisRequest,
     VoiceSourceKind,
 )
+from studio.runtime_manager import RuntimeManager
 from studio.speech_router import RouteError, RouteRequest, route
 from studio.voice_profile_store import StoredVoiceProfile, VoiceProfileStore
 
@@ -35,11 +37,11 @@ class SynthesisError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class SynthesisExecutionSettings:
-    """Internal compatibility settings for the proven Chatterbox path.
+    """Internal execution controls kept outside the public semantic request.
 
-    These are deliberately **not** added to the public semantic request. The current
-    Gradio UI can pass its exact technical controls during migration, while future
-    engines translate semantic style/recipes through their own adapters.
+    Existing Chatterbox controls stay compatible while lighter/newer engines consume
+    only the settings they actually support. Public clients continue to speak in terms
+    of voice/style/language/priority instead of provider-specific sliders.
     """
 
     seed: int | None = None
@@ -83,20 +85,20 @@ class EngineProtocol(Protocol):
     def generate(self, **kwargs: Any) -> GenerationResultProtocol: ...
 
 
+class KokoroAdapterProtocol(Protocol):
+    def synthesize(self, **kwargs: Any) -> GenerationResultProtocol: ...
+
+
 EngineFactory = Callable[[Path], EngineProtocol]
 ProgressCallback = Callable[[str, int | None, int | None], None]
 ExecutionResultCallback = Callable[[GenerationResultProtocol], None]
 
-# Phase 2/3 deliberately prove the public Core boundary with the existing Chatterbox
-# implementation only. The router may catalogue future engines, but execution must
-# never fall through into the wrong adapter. Phase 4 replaces this guard with generic
-# engine-family dispatch once isolated runtimes/adapters exist.
-CURRENT_EXECUTION_FAMILIES = frozenset({"chatterbox"})
+# Executable families are an internal implementation registry, never a public protocol.
+# Adding a model/checkpoint behind an existing family does not change external clients.
+CURRENT_EXECUTION_FAMILIES = frozenset({"chatterbox", "kokoro"})
 
 
 def _default_engine_factory(output_dir: Path) -> EngineProtocol:
-    # Product/controller construction uses the Core-backed compatibility facade. Core
-    # itself must call the native implementation or it would recursively call itself.
     from studio.engine import NativeChatterboxEngine
 
     return NativeChatterboxEngine(output_dir)
@@ -133,25 +135,31 @@ def _wav_duration(path: Path) -> float:
     raise SynthesisError(SpeechErrorKind.GENERATION_FAILED, "Generated audio has no valid duration.")
 
 
-def _safe_generation_metadata(result: GenerationResultProtocol, settings: SynthesisExecutionSettings) -> dict[str, Any]:
-    return {
-        "seed": int(result.seed),
+def _safe_generation_metadata(
+    result: GenerationResultProtocol,
+    settings: SynthesisExecutionSettings,
+    *,
+    family: str,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
         "chunk_count": int(result.chunk_count),
-        "raw_mode": bool(settings.raw_mode),
-        "smart_chunking": bool(settings.smart_chunking and not settings.raw_mode),
         "speech_speed": float(settings.speech_speed),
     }
+    if family == "chatterbox":
+        metadata.update(
+            {
+                "seed": int(result.seed),
+                "raw_mode": bool(settings.raw_mode),
+                "smart_chunking": bool(settings.smart_chunking and not settings.raw_mode),
+            }
+        )
+    else:
+        metadata["deterministic_seed"] = None
+    return metadata
 
 
 class SpeechSynthesisService:
-    """Reusable Speech Core synthesis service.
-
-    The default sidecar lifecycle releases the ML engine after each request. Product
-    migration clients may inject one process-owned Chatterbox engine and set
-    `release_engine_after_request=False` so repeated takes/Compare/Best-of preserve the
-    existing in-memory model behavior. That optimization is internal; public request
-    semantics stay identical.
-    """
+    """Reusable, capability-driven local Speech Core synthesis service."""
 
     def __init__(
         self,
@@ -162,6 +170,8 @@ class SpeechSynthesisService:
         model_manager: ModelManagerProtocol | None = None,
         engine_factory: EngineFactory | None = None,
         release_engine_after_request: bool = True,
+        runtime_manager: RuntimeManager | None = None,
+        kokoro_adapter: KokoroAdapterProtocol | None = None,
     ):
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +180,8 @@ class SpeechSynthesisService:
         self.model_manager = model_manager or LocalModelManager(self.data_dir.parent / "model_state.json")
         self.engine_factory = engine_factory or _default_engine_factory
         self.release_engine_after_request = bool(release_engine_after_request)
+        self.runtime_manager = runtime_manager or RuntimeManager(self.data_dir.parent / "runtimes")
+        self.kokoro_adapter = kokoro_adapter or KokoroExecutionAdapter(self.runtime_manager)
         self.work_dir = self.data_dir / "generation-work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -197,7 +209,12 @@ class SpeechSynthesisService:
                 continue
             binding = profile.binding_for(manifest.engine_id)
             _model_id, status = self._status_for_manifest(manifest, binding.model_id if binding else None)
-            if status is not None and status.installed and status.snapshot_path:
+            if (
+                status is not None
+                and status.installed
+                and status.snapshot_path
+                and not bool(getattr(status, "repairable", False))
+            ):
                 rows.add(manifest.engine_id)
         return frozenset(rows)
 
@@ -227,7 +244,7 @@ class SpeechSynthesisService:
         if source.reference is None:
             raise SynthesisError(
                 SpeechErrorKind.UNSUPPORTED_VOICE_SOURCE,
-                f"Voice source '{source.kind.value}' does not provide a clone reference for the current Chatterbox route.",
+                f"Voice source '{source.kind.value}' does not provide a clone reference for this route.",
             )
         try:
             return self.artifact_store.resolve(source.reference)
@@ -257,6 +274,146 @@ class SpeechSynthesisService:
             )
         except RouteError as exc:
             raise SynthesisError(exc.kind, str(exc)) from exc
+
+    def _execute_chatterbox(
+        self,
+        *,
+        text: str,
+        profile: StoredVoiceProfile,
+        model_id: str,
+        model_status: LocalModelStatus,
+        language: str,
+        settings: SynthesisExecutionSettings,
+        invocation_dir: Path,
+        progress_callback: ProgressCallback | None,
+    ) -> GenerationResultProtocol:
+        reference = self._resolve_reference(profile)
+        engine: EngineProtocol | None = None
+        try:
+            engine = self.engine_factory(invocation_dir)
+            if settings.device:
+                engine.set_device(settings.device, settings.device_label)
+            engine.set_model_path(model_id, model_status.snapshot_path)
+
+            def engine_progress(message: str, current: int | None, total: int | None) -> None:
+                _notify(progress_callback, message or "generating", current, total)
+
+            _notify(progress_callback, "generating", 0, None)
+            return engine.generate(
+                script=text,
+                voice_path=reference,
+                model_id=model_id,
+                language_id=language,
+                exaggeration=settings.exaggeration,
+                cfg_weight=settings.cfg_weight,
+                temperature=settings.temperature,
+                repetition_penalty=settings.repetition_penalty,
+                min_p=settings.min_p,
+                top_p=settings.top_p,
+                top_k=settings.top_k,
+                speech_speed=settings.speech_speed,
+                raw_mode=settings.raw_mode,
+                smart_chunking=settings.smart_chunking,
+                max_chars=settings.max_chars,
+                chunk_gap_seconds=settings.chunk_gap_seconds,
+                seed=settings.seed,
+                progress_callback=engine_progress,
+            )
+        finally:
+            if engine is not None and self.release_engine_after_request:
+                try:
+                    unload = getattr(engine, "unload", None)
+                    if callable(unload):
+                        unload()
+                except Exception:
+                    pass
+
+    def _execute_kokoro(
+        self,
+        *,
+        text: str,
+        profile: StoredVoiceProfile,
+        manifest: EngineManifest,
+        binding,
+        model_id: str,
+        model_status: LocalModelStatus,
+        language: str,
+        settings: SynthesisExecutionSettings,
+        invocation_dir: Path,
+        progress_callback: ProgressCallback | None,
+    ) -> GenerationResultProtocol:
+        source = profile.profile.source
+        if source.kind != VoiceSourceKind.READY:
+            raise SynthesisError(
+                SpeechErrorKind.UNSUPPORTED_VOICE_SOURCE,
+                "Kokoro currently executes ready voices only.",
+                data={"engine_id": manifest.engine_id, "source_kind": source.kind.value},
+            )
+        voice_id = (binding.engine_voice_id if binding and binding.engine_voice_id else source.voice_id) or ""
+        if not voice_id:
+            raise SynthesisError(
+                SpeechErrorKind.INVALID_ARGUMENT,
+                "This ready voice does not identify an engine voice.",
+                data={"engine_id": manifest.engine_id},
+            )
+        if not model_status.snapshot_path:
+            raise SynthesisError(SpeechErrorKind.MODEL_NOT_INSTALLED, "Kokoro model snapshot is missing.")
+
+        def engine_progress(message: str, current: int | None, total: int | None) -> None:
+            _notify(progress_callback, message or "generating", current, total)
+
+        _notify(progress_callback, "generating", 0, None)
+        return self.kokoro_adapter.synthesize(
+            text=text,
+            model_snapshot=model_status.snapshot_path,
+            model_id=model_id,
+            voice_id=voice_id,
+            language=language,
+            output_dir=invocation_dir,
+            speed=settings.speech_speed,
+            device=settings.device,
+            progress_callback=engine_progress,
+        )
+
+    def _execute_family(
+        self,
+        *,
+        family: str,
+        text: str,
+        profile: StoredVoiceProfile,
+        manifest: EngineManifest,
+        binding,
+        model_id: str,
+        model_status: LocalModelStatus,
+        language: str,
+        settings: SynthesisExecutionSettings,
+        invocation_dir: Path,
+        progress_callback: ProgressCallback | None,
+    ) -> GenerationResultProtocol:
+        handlers = {
+            "chatterbox": self._execute_chatterbox,
+            "kokoro": self._execute_kokoro,
+        }
+        handler = handlers.get(family)
+        if handler is None:
+            raise SynthesisError(
+                SpeechErrorKind.ENGINE_UNAVAILABLE,
+                f"{manifest.display_name} does not have a local execution adapter in this Speech Core build yet.",
+                data={"engine_id": manifest.engine_id, "family": family},
+            )
+        common = dict(
+            text=text,
+            profile=profile,
+            model_id=model_id,
+            model_status=model_status,
+            language=language,
+            settings=settings,
+            invocation_dir=invocation_dir,
+            progress_callback=progress_callback,
+        )
+        if family == "kokoro":
+            return handler(manifest=manifest, binding=binding, **common)
+        return handler(**common)
 
     def synthesize(
         self,
@@ -292,18 +449,19 @@ class SpeechSynthesisService:
                     f"{manifest.display_name} is catalogued but does not have a local execution adapter in this Speech Core build yet.",
                     data={"engine_id": manifest.engine_id, "family": manifest.family},
                 )
+
             binding = profile.binding_for(decision.engine_id)
             model_id, status = self._status_for_manifest(manifest, binding.model_id if binding else None)
             if model_id is None:
                 raise SynthesisError(
                     SpeechErrorKind.ENGINE_UNAVAILABLE,
-                    f"{manifest.display_name} does not have a certified model asset for local synthesis yet.",
+                    f"{manifest.display_name} does not have a configured model asset for local synthesis yet.",
                     data={"engine_id": manifest.engine_id},
                 )
-            if status is None or not status.installed or not status.snapshot_path:
+            if status is None or not status.installed or not status.snapshot_path or bool(getattr(status, "repairable", False)):
                 raise SynthesisError(
                     SpeechErrorKind.MODEL_NOT_INSTALLED,
-                    f"The model required by {manifest.display_name} is not installed.",
+                    f"The model required by {manifest.display_name} is not installed or needs repair.",
                     data={"engine_id": manifest.engine_id, "model_id": model_id},
                 )
             if binding is not None and binding.model_revision and status.revision != binding.model_revision:
@@ -318,41 +476,22 @@ class SpeechSynthesisService:
                     },
                 )
 
-            reference = self._resolve_reference(profile)
             _notify(progress_callback, "loading")
-
             invocation_dir = self.work_dir / uuid.uuid4().hex
             invocation_dir.mkdir(parents=True, exist_ok=False)
-            engine: EngineProtocol | None = None
             try:
-                engine = self.engine_factory(invocation_dir)
-                if settings.device:
-                    engine.set_device(settings.device, settings.device_label)
-                engine.set_model_path(model_id, status.snapshot_path)
-
-                def engine_progress(message: str, current: int | None, total: int | None) -> None:
-                    _notify(progress_callback, message or "generating", current, total)
-
-                _notify(progress_callback, "generating", 0, None)
-                result = engine.generate(
-                    script=text,
-                    voice_path=reference,
+                result = self._execute_family(
+                    family=manifest.family,
+                    text=text,
+                    profile=profile,
+                    manifest=manifest,
+                    binding=binding,
                     model_id=model_id,
-                    language_id=language,
-                    exaggeration=settings.exaggeration,
-                    cfg_weight=settings.cfg_weight,
-                    temperature=settings.temperature,
-                    repetition_penalty=settings.repetition_penalty,
-                    min_p=settings.min_p,
-                    top_p=settings.top_p,
-                    top_k=settings.top_k,
-                    speech_speed=settings.speech_speed,
-                    raw_mode=settings.raw_mode,
-                    smart_chunking=settings.smart_chunking,
-                    max_chars=settings.max_chars,
-                    chunk_gap_seconds=settings.chunk_gap_seconds,
-                    seed=settings.seed,
-                    progress_callback=engine_progress,
+                    model_status=status,
+                    language=language,
+                    settings=settings,
+                    invocation_dir=invocation_dir,
+                    progress_callback=progress_callback,
                 )
                 if result.model_id != model_id:
                     raise SynthesisError(
@@ -363,6 +502,7 @@ class SpeechSynthesisService:
                 audio_path = Path(result.audio_path).resolve()
                 if not audio_path.is_file():
                     raise SynthesisError(SpeechErrorKind.GENERATION_FAILED, "Speech engine returned no audio file.")
+
                 _notify(progress_callback, "validating")
                 duration = _wav_duration(audio_path)
                 artifact = self.artifact_store.register_file(
@@ -371,9 +511,6 @@ class SpeechSynthesisService:
                     mime_type="audio/wav",
                     copy=True,
                 )
-                # The callback is internal migration plumbing. It runs while the private
-                # engine result still exists so the legacy UI can preserve its current
-                # WAV/JSON output/history contract while generation itself is Core-owned.
                 if result_callback is not None:
                     result_callback(result)
 
@@ -381,9 +518,12 @@ class SpeechSynthesisService:
                 if recipe_revision is None and binding is not None and binding.recipe_revision is not None:
                     if profile.profile.preferred_engine_id == decision.engine_id:
                         recipe_revision = str(binding.recipe_revision)
-                public_metadata = _safe_generation_metadata(result, settings)
+                public_metadata = _safe_generation_metadata(result, settings, family=manifest.family)
                 public_metadata["route_reason"] = decision.reason
                 public_metadata["source_kind"] = profile.profile.source.kind.value
+                public_metadata["engine_voice_id"] = (
+                    binding.engine_voice_id if binding and binding.engine_voice_id else profile.profile.source.voice_id
+                )
                 public_metadata["style_mapping"] = "pending" if request.style not in {"", "auto"} else "auto"
                 if request.pronunciation_hints or profile.pronunciation_hints:
                     public_metadata["pronunciation_hints_applied"] = False
@@ -404,13 +544,6 @@ class SpeechSynthesisService:
                     metadata=public_metadata,
                 )
             finally:
-                if engine is not None and self.release_engine_after_request:
-                    try:
-                        unload = getattr(engine, "unload", None)
-                        if callable(unload):
-                            unload()
-                    except Exception:
-                        pass
                 shutil.rmtree(invocation_dir, ignore_errors=True)
         except GenerationCancelled as exc:
             raise SynthesisError(SpeechErrorKind.CANCELLED, str(exc)) from exc
