@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-"""Isolated Kokoro inference worker.
+"""Isolated Kokoro English inference worker.
 
-This module is executed with the Kokoro runtime's Python interpreter. It deliberately
-accepts only local model/voice paths and forces Hub/Transformers offline mode so a speech
-request can never trigger a hidden network download.
+The worker accepts only local model/voice paths. Network access is disabled for model
+libraries before any heavy imports. The Studio intentionally omits Kokoro's optional
+native eSpeak fallback from this lightweight runtime: unknown English words are left to
+future pronunciation-hint/QA recovery rather than triggering a native-data dependency or
+an implicit transformer fallback download.
 """
 
 import argparse
 import json
 import os
 import re
+import sys
+import types
 import wave
 from pathlib import Path
 
@@ -43,6 +47,37 @@ def _safe_model_files(model_dir: Path, voice_id: str) -> tuple[Path, Path, Path]
     return config, weights, voice
 
 
+def _install_english_noop_fallback() -> None:
+    """Provide Kokoro's pipeline with a truthy, network-free English OOV fallback.
+
+    Kokoro imports ``misaki.espeak`` unconditionally and Misaki's ``G2P`` creates a
+    transformer fallback when passed ``None``. For this English-only lightweight route,
+    neither behaviour is desirable. A tiny in-process module satisfies the upstream
+    interface and returns no pronunciation for OOV tokens. Common words still use
+    Misaki's shipped lexicon and installed spaCy English tagger.
+    """
+
+    import misaki
+
+    module = types.ModuleType("misaki.espeak")
+
+    class NoopEnglishFallback:
+        def __init__(self, british: bool = False):
+            self.british = bool(british)
+
+        def __call__(self, _token):
+            return None, None
+
+    class DisabledEspeakG2P:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("This Kokoro runtime is certified for English lexicon G2P only.")
+
+    module.EspeakFallback = NoopEnglishFallback
+    module.EspeakG2P = DisabledEspeakG2P
+    sys.modules["misaki.espeak"] = module
+    setattr(misaki, "espeak", module)
+
+
 def _write_pcm16(path: Path, samples) -> None:
     import numpy as np
 
@@ -63,6 +98,7 @@ def main() -> int:
     args = _parse_args()
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     model_dir = Path(args.model_dir).expanduser().resolve()
     text_path = Path(args.text_file).expanduser().resolve()
@@ -76,7 +112,16 @@ def main() -> int:
     if not 0.5 <= float(args.speed) <= 2.0:
         raise ValueError("Kokoro speed must be between 0.5 and 2.0.")
 
-    # Heavy imports remain inside this isolated process only.
+    # Prove the G2P data required by upstream is present before KPipeline has any chance
+    # to invoke its own download helper.
+    import spacy
+
+    if not spacy.util.is_package("en_core_web_sm"):
+        raise RuntimeError("The pinned spaCy English pipeline is missing from the Kokoro runtime.")
+
+    _install_english_noop_fallback()
+
+    # Heavy ML imports remain inside this isolated process only.
     import numpy as np
     import torch
     from kokoro import KModel, KPipeline
@@ -90,11 +135,7 @@ def main() -> int:
         raise RuntimeError("MPS was requested but is not available in the Kokoro runtime.")
 
     repo_id = "hexgrad/Kokoro-82M"
-    model = KModel(
-        repo_id=repo_id,
-        config=str(config_path),
-        model=str(weights_path),
-    ).to(device).eval()
+    model = KModel(repo_id=repo_id, config=str(config_path), model=str(weights_path)).to(device).eval()
     lang_code = "b" if args.voice_id.startswith("b") else "a"
     pipeline = KPipeline(lang_code=lang_code, repo_id=repo_id, model=model, device=device)
     voice_tensor = torch.load(str(voice_path), map_location="cpu", weights_only=True)
@@ -143,6 +184,7 @@ def main() -> int:
                 "sample_rate": SAMPLE_RATE,
                 "chunk_count": len(chunks),
                 "speed": float(args.speed),
+                "ood_fallback": "disabled",
                 "generated_text_chunks": graphemes,
             },
             ensure_ascii=False,
