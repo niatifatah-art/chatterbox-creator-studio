@@ -75,9 +75,6 @@ def _candidate_score(manifest: EngineManifest, request: RouteRequest) -> tuple[i
     elif request.priority == Priority.FAST:
         score += {"ultra_light": 30, "light": 25, "medium": 20, "heavy": 5}.get(manifest.resource_tier, 0)
 
-    # Prefer supported/certified routes over discovery-only catalogue entries. The
-    # caller still receives a catalogued route when no supported implementation can
-    # satisfy the capability at all (for example Voice Design before certification).
     supported_rank = 1 if manifest.status == EngineStatus.SUPPORTED else 0
     return score, supported_rank, 1 if installed else 0, manifest.engine_id
 
@@ -104,6 +101,16 @@ def route(request: RouteRequest) -> RouteDecision:
             engine_id=manifest.engine_id,
             reason="Manual engine override.",
             requires_install=manifest.engine_id not in request.installed_engines,
+        )
+
+    # A ready voice is provider-owned identity, unlike a semantic clone/design request.
+    # Without a Voice Profile engine binding there is no safe way to infer whether a
+    # preset id belongs to Kokoro, Qwen, or a future provider. Fail closed rather than
+    # silently choosing whichever READY_VOICE engine happens to score highest.
+    if request.needs_ready_voice and not request.consistency_engine:
+        raise RouteError(
+            SpeechErrorKind.ENGINE_UNAVAILABLE,
+            "Ready voices require an explicit engine binding before they can be routed.",
         )
 
     candidates = [
