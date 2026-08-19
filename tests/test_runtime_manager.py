@@ -88,6 +88,74 @@ def test_isolated_runtime_is_ready_only_when_environment_and_manifest_fingerprin
     assert "manifest changed" in (stale.warning or "").lower()
 
 
+def test_manifest_bootstrap_changes_runtime_fingerprint(tmp_path, monkeypatch):
+    module = __import__("studio.runtime_manager", fromlist=["RUNTIME_MANIFESTS"])
+    manifest = RuntimeManifest(
+        runtime_id="bootstrap-test",
+        display_name="Bootstrap Test",
+        install_mode=RuntimeInstallMode.ISOLATED,
+        requirements=("demo-package==1.0",),
+        bootstrap_requirements=("torch==1.0",),
+        bootstrap_index_url="https://packages.example.invalid/cpu",
+    )
+    monkeypatch.setitem(module.RUNTIME_MANIFESTS, manifest.runtime_id, manifest)
+    manager = RuntimeManager(tmp_path / "runtimes")
+    environment = manager.environment_path(manifest.runtime_id)
+    python_path = _venv_python(environment)
+    python_path.parent.mkdir(parents=True, exist_ok=True)
+    python_path.write_bytes(b"fake")
+    manager._record_install(manifest.runtime_id, "test")
+    assert manager.status(manifest.runtime_id).ready is True
+
+    changed = RuntimeManifest(
+        runtime_id=manifest.runtime_id,
+        display_name=manifest.display_name,
+        install_mode=RuntimeInstallMode.ISOLATED,
+        requirements=manifest.requirements,
+        bootstrap_requirements=("torch==2.0",),
+        bootstrap_index_url=manifest.bootstrap_index_url,
+    )
+    monkeypatch.setitem(module.RUNTIME_MANIFESTS, manifest.runtime_id, changed)
+    assert manager.status(manifest.runtime_id).ready is False
+
+
+def test_install_bootstraps_from_explicit_index_before_main_requirements(tmp_path, monkeypatch):
+    module = __import__("studio.runtime_manager", fromlist=["RUNTIME_MANIFESTS"])
+    manifest = RuntimeManifest(
+        runtime_id="bootstrap-order",
+        display_name="Bootstrap Order",
+        install_mode=RuntimeInstallMode.ISOLATED,
+        requirements=("engine-package==1.0",),
+        bootstrap_requirements=("torch==2.13.0",),
+        bootstrap_index_url="https://download.example.invalid/cpu",
+    )
+    monkeypatch.setitem(module.RUNTIME_MANIFESTS, manifest.runtime_id, manifest)
+    manager = RuntimeManager(tmp_path / "runtimes")
+    monkeypatch.setattr(manager, "_uv_executable", lambda: None)
+    calls: list[list[str]] = []
+
+    def fake_run(command, check):
+        command = [str(part) for part in command]
+        calls.append(command)
+        if len(calls) == 1:
+            environment = Path(command[-1])
+            python_path = _venv_python(environment)
+            python_path.parent.mkdir(parents=True, exist_ok=True)
+            python_path.write_bytes(b"fake-python")
+        return None
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    status = manager.install(manifest.runtime_id)
+
+    assert status.ready is True
+    assert len(calls) == 3
+    assert calls[1][-1] == "torch==2.13.0"
+    assert "--index-url" in calls[1]
+    assert "https://download.example.invalid/cpu" in calls[1]
+    assert calls[2][-1] == "engine-package==1.0"
+    assert "--index-url" not in calls[2]
+
+
 def test_failed_isolated_install_removes_partial_environment(tmp_path, monkeypatch):
     module = __import__("studio.runtime_manager", fromlist=["RUNTIME_MANIFESTS"])
     manifest = _isolated()
