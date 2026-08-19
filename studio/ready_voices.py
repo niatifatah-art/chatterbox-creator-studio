@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+from studio.protocol import EngineBinding, VoiceSourceKind
+from studio.voice_profile_store import StoredVoiceProfile, VoiceProfileStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,7 +23,7 @@ class ReadyVoiceManifest:
 
 # Kokoro v1.0 English voices from the official model repository. We keep the upstream
 # IDs unchanged because the voice pack filenames use them. Grades are upstream guidance,
-# not our own quality claim; Phase 9 will add local measured certification.
+# not our own quality claim; the later certification phase adds measured Studio data.
 _KOKORO_US = (
     ("af_alloy", "Alloy", "C"),
     ("af_aoede", "Aoede", "C+"),
@@ -102,3 +106,48 @@ def get_ready_voice(engine_id: str, voice_id: str) -> ReadyVoiceManifest:
         if voice.engine_id == engine_id and voice.voice_id == voice_id:
             return voice
     raise ValueError(f"Unknown ready voice '{engine_id}:{voice_id}'.")
+
+
+def create_ready_voice_profile(
+    store: VoiceProfileStore,
+    profile_id: str,
+    *,
+    engine_id: str,
+    voice_id: str,
+    display_name: str | None = None,
+    model_id: str | None = None,
+    model_revision: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> StoredVoiceProfile:
+    """Create a durable VoiceProfile from a catalogue preset.
+
+    A ready voice is engine-owned identity. Persisting only ``voice_id`` would leave a
+    future router to guess between providers that happen to expose READY_VOICE. This
+    helper therefore creates the semantic source and immediately promotes one explicit
+    engine binding. External projects still reference only the resulting profile ID.
+    """
+
+    ready = get_ready_voice(engine_id, voice_id)
+    store.create(
+        profile_id,
+        display_name or ready.display_name,
+        source_kind=VoiceSourceKind.READY,
+        source_voice_id=ready.voice_id,
+        supported_languages=(ready.language,),
+        metadata={
+            "ready_voice_engine": ready.engine_id,
+            "ready_voice_locale": ready.locale,
+            **dict(metadata or {}),
+        },
+    )
+    return store.add_binding(
+        profile_id,
+        EngineBinding(
+            engine_id=ready.engine_id,
+            model_id=model_id,
+            model_revision=model_revision,
+            engine_voice_id=ready.voice_id,
+            certified_languages=(ready.language,),
+        ),
+        promote_revision=True,
+    )
