@@ -22,6 +22,10 @@ class CoreGenerationEngine:
     Saved legacy WAV paths are resolved back to their canonical Voice Profile. An
     arbitrary CLI WAV gets a short-lived profile/artifact and is cleaned afterwards.
 
+    The native Chatterbox process is deliberately lazy. Constructing the product shell
+    must not import/initialize Torch or require any speech runtime; the native engine is
+    created only when an operation actually needs Chatterbox execution.
+
     New engine families must never be added here. Generic engine/runtime dispatch is a
     Phase 4 Speech Core responsibility; this compatibility facade disappears with the
     legacy controller shell.
@@ -48,12 +52,15 @@ class CoreGenerationEngine:
         self.artifact_store = artifact_store or ArtifactStore(self.core_dir / "artifacts")
         self.voice_library = VoiceLibrary(data_dir / "voices", core_directory=self.core_dir)
 
-        self._engine = NativeChatterboxEngine(self.core_dir / "generation-work")
+        self._engine: NativeChatterboxEngine | None = None
+        self._device_override: tuple[str, str] | None = None
+        self._model_paths: dict[str, Path | None] = {}
 
         def factory(invocation_dir: Path):
             invocation_dir.mkdir(parents=True, exist_ok=True)
-            self._engine.output_dir = invocation_dir
-            return self._engine
+            engine = self._ensure_engine()
+            engine.output_dir = invocation_dir
+            return engine
 
         self.service = SpeechSynthesisService(
             self.core_dir,
@@ -64,24 +71,49 @@ class CoreGenerationEngine:
             release_engine_after_request=False,
         )
 
+    def _ensure_engine(self) -> NativeChatterboxEngine:
+        """Create the process-owned Chatterbox engine on first real use only."""
+
+        if self._engine is None:
+            engine = NativeChatterboxEngine(self.core_dir / "generation-work")
+            if self._device_override is not None:
+                engine.set_device(*self._device_override)
+            for model_id, path in self._model_paths.items():
+                engine.set_model_path(model_id, path)
+            self._engine = engine
+        return self._engine
+
     @property
     def device(self) -> str:
-        return self._engine.device
+        if self._engine is not None:
+            return self._engine.device
+        if self._device_override is not None:
+            return self._device_override[0]
+        # A neutral shell value only. Actual automatic device detection happens when
+        # `_ensure_engine()` constructs the native runtime for the first real use.
+        return "cpu"
 
     @property
     def device_label(self) -> str:
-        return self._engine.device_label
+        if self._engine is not None:
+            return self._engine.device_label
+        if self._device_override is not None:
+            return self._device_override[1]
+        return "CPU"
 
     @property
     def loaded(self) -> bool:
-        return self._engine.loaded
+        return bool(self._engine is not None and self._engine.loaded)
 
     @property
     def loaded_model_id(self) -> str | None:
-        return self._engine.loaded_model_id
+        return self._engine.loaded_model_id if self._engine is not None else None
 
     def set_device(self, device: str, label: str | None = None) -> None:
-        self._engine.set_device(device, label)
+        resolved = (device, label or device.upper())
+        self._device_override = resolved
+        if self._engine is not None:
+            self._engine.set_device(*resolved)
 
     def set_model_path(self, model_id: str, path: str | Path | None) -> None:
         """Bridge the legacy explicit snapshot selection into Core state.
@@ -89,20 +121,26 @@ class CoreGenerationEngine:
         Old UI/helper code resolved a local snapshot then configured the engine object
         directly. Speech Core correctly validates the model manager before execution,
         so both layers must agree on the same selected revision during migration.
+
+        Recording the path must stay model-free: the native engine receives the same
+        selection lazily if/when Chatterbox is actually executed.
         """
-        self._engine.set_model_path(model_id, path)
-        if path is not None:
-            snapshot = Path(path).expanduser().resolve()
+        resolved_path = Path(path).expanduser().resolve() if path is not None else None
+        self._model_paths[model_id] = resolved_path
+        if self._engine is not None:
+            self._engine.set_model_path(model_id, resolved_path)
+        if resolved_path is not None:
             selector = getattr(self.model_manager, "select_snapshot", None)
             if not callable(selector):
                 raise RuntimeError("The model manager cannot record an explicit snapshot selection.")
-            selector(model_id, snapshot, revision=snapshot.name)
+            selector(model_id, resolved_path, revision=resolved_path.name)
 
     def load_model(self, model_id: str, progress_callback=None) -> None:
-        self._engine.load_model(model_id, progress_callback=progress_callback)
+        self._ensure_engine().load_model(model_id, progress_callback=progress_callback)
 
     def unload(self) -> None:
-        self._engine.unload()
+        if self._engine is not None:
+            self._engine.unload()
 
     @staticmethod
     def _engine_id_for_model(model_id: str) -> str:
@@ -236,6 +274,9 @@ class CoreGenerationEngine:
             captured.append(self._copy_private_result(result, self.output_dir))
 
         try:
+            # This is the first point at which the legacy facade actually needs the
+            # Chatterbox runtime. Until here the entire product shell remains model-free.
+            native = self._ensure_engine()
             self.service.synthesize(
                 SpeechSynthesisRequest(
                     text=script,
@@ -245,8 +286,8 @@ class CoreGenerationEngine:
                 ),
                 execution=SynthesisExecutionSettings(
                     seed=seed,
-                    device=self.device,
-                    device_label=self.device_label,
+                    device=native.device,
+                    device_label=native.device_label,
                     exaggeration=float(exaggeration),
                     cfg_weight=float(cfg_weight),
                     temperature=float(temperature),
