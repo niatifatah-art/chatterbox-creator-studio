@@ -53,13 +53,19 @@ class KokoroExecutionAdapter:
 
     @staticmethod
     def _voice_path(snapshot: Path, voice_id: str) -> Path:
+        """Return one allowlisted ready-voice entry without resolving Hub symlinks.
+
+        Hugging Face snapshots intentionally store files as symlinks into the shared
+        ``blobs`` directory. Calling ``resolve()`` on the voice file therefore leaves
+        the snapshot tree even though the logical snapshot entry is valid. The fixed
+        ``voices/<validated-id>.pt`` construction is traversal-safe without following
+        the symlink target for containment checks.
+        """
+
         if not VOICE_ID_RE.fullmatch(voice_id):
             raise ValueError("Invalid Kokoro ready voice id.")
-        path = (snapshot / "voices" / f"{voice_id}.pt").resolve()
-        try:
-            path.relative_to((snapshot / "voices").resolve())
-        except ValueError as exc:
-            raise ValueError("Invalid Kokoro ready voice path.") from exc
+        voices_root = snapshot / "voices"
+        path = voices_root / f"{voice_id}.pt"
         if not path.is_file():
             raise FileNotFoundError(f"Kokoro ready voice '{voice_id}' is not installed.")
         return path
@@ -156,8 +162,6 @@ class KokoroExecutionAdapter:
 
         stdout, stderr = process.communicate()
         if process.returncode != 0:
-            # Keep filesystem paths/tracebacks internal. The parent Speech Core wraps
-            # this as a stable GENERATION_FAILED error for public clients.
             tail = (stderr or stdout or "Kokoro worker failed.").strip().splitlines()[-1:]
             reason = tail[0][:300] if tail else "Kokoro worker failed."
             raise RuntimeError(reason)
