@@ -276,17 +276,19 @@ def test_structured_events_are_rejected_instead_of_silently_ignored(tmp_path: Pa
 def test_ready_voice_does_not_get_forced_into_chatterbox_clone_path(tmp_path: Path):
     data = tmp_path / "data" / "speech-core"
     profiles = VoiceProfileStore(data / "voice-profiles")
-    profiles.create("ready", "Ready", source_kind=VoiceSourceKind.READY, source_voice_id="preset")
+    profiles.create("ready", "Ready", source_kind=VoiceSourceKind.READY, source_voice_id="af_heart")
     service = SpeechSynthesisService(
         data,
         profile_store=profiles,
         artifact_store=ArtifactStore(data / "artifacts"),
         model_manager=FakeModelManager(tmp_path / "models", installed=("multilingual-v3",)),
-        engine_factory=lambda _output: (_ for _ in ()).throw(AssertionError("engine must not load")),
+        engine_factory=lambda _output: (_ for _ in ()).throw(AssertionError("Chatterbox engine must not load")),
     )
     with pytest.raises(SynthesisError) as exc:
         service.synthesize(SpeechSynthesisRequest(text="Hello", voice_profile_id="ready", language="en"))
-    assert exc.value.kind == SpeechErrorKind.ENGINE_UNAVAILABLE
+    assert exc.value.kind == SpeechErrorKind.MODEL_NOT_INSTALLED
+    assert exc.value.data["engine_id"] == "kokoro"
+    assert exc.value.data["model_id"] == "kokoro-v1.0"
 
 
 def test_catalogued_future_engine_cannot_execute_through_chatterbox_factory(tmp_path: Path):
