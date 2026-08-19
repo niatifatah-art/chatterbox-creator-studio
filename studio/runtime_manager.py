@@ -11,12 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .engine_assets import (
-    RUNTIME_MANIFESTS,
-    RuntimeInstallMode,
-    RuntimeKind,
-    RuntimeManifest,
-)
+from .engine_assets import RUNTIME_MANIFESTS, RuntimeInstallMode, RuntimeKind, RuntimeManifest
 
 
 RUNTIME_STATE_SCHEMA_VERSION = 1
@@ -49,6 +44,7 @@ class RuntimeInstallPlan:
     reason: str
     bootstrap_requirements: tuple[str, ...] = ()
     bootstrap_index_url: str | None = None
+    no_deps_requirements: tuple[str, ...] = ()
 
 
 def _utc_now() -> str:
@@ -63,6 +59,7 @@ def _runtime_fingerprint(manifest: RuntimeManifest) -> str:
             "install_mode": manifest.install_mode.value,
             "python_spec": manifest.python_spec,
             "requirements": list(manifest.requirements),
+            "no_deps_requirements": list(manifest.no_deps_requirements),
             "bootstrap_requirements": list(manifest.bootstrap_requirements),
             "bootstrap_index_url": manifest.bootstrap_index_url,
             "distribution_name": manifest.distribution_name,
@@ -82,13 +79,12 @@ def _venv_python(environment: Path) -> Path:
 
 
 class RuntimeManager:
-    """Local runtime lifecycle independent from model assets.
+    """App-owned runtime lifecycle independent from model assets.
 
-    New engine families may carry mutually incompatible Python stacks. The manager keeps
-    those environments under one app-owned root and records the exact manifest
-    fingerprint used to create them. Platform bootstrap packages may be installed from
-    an explicit upstream index before the main engine requirements; this prevents a
-    lightweight CPU route from accidentally resolving multi-gigabyte GPU dependencies.
+    Runtime manifests may bootstrap platform-specific foundations (for example a CPU-only
+    PyTorch wheel), install audited dependencies, and finally install engine packages with
+    dependency resolution disabled when the Studio intentionally replaces an upstream
+    optional dependency surface. Every install input participates in the fingerprint.
     """
 
     def __init__(self, root: str | Path, state_path: str | Path | None = None):
@@ -156,7 +152,7 @@ class RuntimeManager:
             installed = self._host_distribution_installed(manifest)
             return RuntimeStatus(
                 runtime_id=runtime_id,
-                configured=bool(manifest.requirements and manifest.distribution_name),
+                configured=bool((manifest.requirements or manifest.no_deps_requirements) and manifest.distribution_name),
                 installed=installed,
                 ready=installed,
                 install_mode=manifest.install_mode.value,
@@ -171,7 +167,7 @@ class RuntimeManager:
         state = self._load_state()
         entry = dict((state.get("runtimes") or {}).get(runtime_id) or {})
         recorded = str(entry.get("manifest_fingerprint") or "") or None
-        configured = bool(manifest.requirements)
+        configured = bool(manifest.requirements or manifest.no_deps_requirements)
         installed = python_path.is_file()
         ready = bool(configured and installed and recorded == fingerprint)
         warning = None
@@ -201,53 +197,35 @@ class RuntimeManager:
 
     def plan_install(self, runtime_id: str) -> RuntimeInstallPlan:
         manifest = self._manifest(runtime_id)
+        common = dict(
+            bootstrap_requirements=manifest.bootstrap_requirements,
+            bootstrap_index_url=manifest.bootstrap_index_url,
+            no_deps_requirements=manifest.no_deps_requirements,
+        )
         if manifest.install_mode == RuntimeInstallMode.HOST_LEGACY:
             return RuntimeInstallPlan(
-                runtime_id=runtime_id,
-                install_mode=manifest.install_mode.value,
-                environment_path=None,
-                requirements=manifest.requirements,
-                tool=None,
-                can_install=False,
+                runtime_id=runtime_id, install_mode=manifest.install_mode.value, environment_path=None,
+                requirements=manifest.requirements, tool=None, can_install=False,
                 reason="This runtime is still installed by the current product setup for compatibility; RuntimeManager does not mutate the host environment.",
-                bootstrap_requirements=manifest.bootstrap_requirements,
-                bootstrap_index_url=manifest.bootstrap_index_url,
+                **common,
             )
         if manifest.kind != RuntimeKind.PYTHON:
             return RuntimeInstallPlan(
-                runtime_id,
-                manifest.install_mode.value,
-                str(self.environment_path(runtime_id)),
-                manifest.requirements,
-                None,
-                False,
-                "Unsupported runtime kind.",
-                manifest.bootstrap_requirements,
-                manifest.bootstrap_index_url,
+                runtime_id, manifest.install_mode.value, str(self.environment_path(runtime_id)),
+                manifest.requirements, None, False, "Unsupported runtime kind.", **common,
             )
-        if not manifest.requirements:
+        if not (manifest.requirements or manifest.no_deps_requirements):
             return RuntimeInstallPlan(
-                runtime_id=runtime_id,
-                install_mode=manifest.install_mode.value,
-                environment_path=str(self.environment_path(runtime_id)),
-                requirements=(),
-                tool=None,
-                can_install=False,
-                reason="Exact runtime requirements have not been audited/frozen yet.",
-                bootstrap_requirements=manifest.bootstrap_requirements,
-                bootstrap_index_url=manifest.bootstrap_index_url,
+                runtime_id=runtime_id, install_mode=manifest.install_mode.value,
+                environment_path=str(self.environment_path(runtime_id)), requirements=(), tool=None,
+                can_install=False, reason="Exact runtime requirements have not been audited/frozen yet.", **common,
             )
         uv = self._uv_executable()
         return RuntimeInstallPlan(
-            runtime_id=runtime_id,
-            install_mode=manifest.install_mode.value,
-            environment_path=str(self.environment_path(runtime_id)),
-            requirements=manifest.requirements,
-            tool="uv" if uv else "venv+pip",
-            can_install=True,
-            reason="Ready for isolated installation.",
-            bootstrap_requirements=manifest.bootstrap_requirements,
-            bootstrap_index_url=manifest.bootstrap_index_url,
+            runtime_id=runtime_id, install_mode=manifest.install_mode.value,
+            environment_path=str(self.environment_path(runtime_id)), requirements=manifest.requirements,
+            tool="uv" if uv else "venv+pip", can_install=True,
+            reason="Ready for isolated installation.", **common,
         )
 
     def _record_install(self, runtime_id: str, tool: str) -> None:
@@ -268,6 +246,7 @@ class RuntimeManager:
         *,
         uv: str | None,
         index_url: str | None = None,
+        no_deps: bool = False,
     ) -> None:
         if not packages:
             return
@@ -275,6 +254,8 @@ class RuntimeManager:
             command = [uv, "pip", "install", "--python", str(env_python)]
         else:
             command = [str(env_python), "-m", "pip", "install"]
+        if no_deps:
+            command.append("--no-deps")
         if index_url:
             command.extend(["--index-url", index_url])
         command.extend(packages)
@@ -298,12 +279,10 @@ class RuntimeManager:
                 subprocess.run([python, "-m", "venv", str(environment)], check=True)
             env_python = _venv_python(environment)
             self._install_packages(
-                env_python,
-                manifest.bootstrap_requirements,
-                uv=uv,
-                index_url=manifest.bootstrap_index_url,
+                env_python, manifest.bootstrap_requirements, uv=uv, index_url=manifest.bootstrap_index_url,
             )
             self._install_packages(env_python, manifest.requirements, uv=uv)
+            self._install_packages(env_python, manifest.no_deps_requirements, uv=uv, no_deps=True)
         except Exception:
             shutil.rmtree(environment, ignore_errors=True)
             raise
